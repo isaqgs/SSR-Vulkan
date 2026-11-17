@@ -46,7 +46,7 @@ struct SSRData
     float maxDistance = 8.0f;
     float stride = 0.015f;
     float thickness = 0.15f;
-    float intensity = 0.8f;
+    float intensity = 1.5f;
 };
 
 struct QueueFamilyIndices
@@ -126,6 +126,7 @@ private:
 
     VkBuffer vertexBuffer = VK_NULL_HANDLE;
     VkDeviceMemory vertexMemory = VK_NULL_HANDLE;
+    uint32_t vertexCount = 0;
     VkBuffer cameraBuffer = VK_NULL_HANDLE;
     VkDeviceMemory cameraMemory = VK_NULL_HANDLE;
     VkBuffer ssrBuffer = VK_NULL_HANDLE;
@@ -945,10 +946,79 @@ private:
 
     void createVertexBuffer()
     {
-        const std::vector<Vertex> vertices = {
-            {{-1.2f, -0.9f, -2.4f}, {0, 0, 1}, {0.08f, 0.55f, 0.95f}},
-            {{1.2f, -0.9f, -2.4f}, {0, 0, 1}, {0.95f, 0.25f, 0.12f}},
-            {{0.0f, 1.1f, -2.4f}, {0, 0, 1}, {0.2f, 0.9f, 0.35f}}};
+        std::vector<Vertex> vertices;
+        auto addVertex = [&](const glm::vec3 &position, const glm::vec3 &normal, const glm::vec3 &color)
+        {
+            vertices.push_back({position, normal, color});
+        };
+        auto addTriangle = [&](const glm::vec3 &a, const glm::vec3 &b, const glm::vec3 &c,
+                               const glm::vec3 &normal, const glm::vec3 &color)
+        {
+            addVertex(a, normal, color);
+            addVertex(b, normal, color);
+            addVertex(c, normal, color);
+        };
+        auto addQuad = [&](const glm::vec3 &a, const glm::vec3 &b, const glm::vec3 &c, const glm::vec3 &d,
+                           const glm::vec3 &normal, const glm::vec3 &color)
+        {
+            addTriangle(a, b, c, normal, color);
+            addTriangle(a, c, d, normal, color);
+        };
+
+        const float floorY = -1.0f;
+        addQuad({-5.0f, floorY, 3.0f}, {5.0f, floorY, 3.0f}, {5.0f, floorY, -12.0f}, {-5.0f, floorY, -12.0f},
+                {0.0f, 1.0f, 0.0f}, {0.22f, 0.25f, 0.31f});
+
+        auto addBox = [&](const glm::vec3 &center, const glm::vec3 &halfSize, const glm::vec3 &color)
+        {
+            const float x0 = center.x - halfSize.x, x1 = center.x + halfSize.x;
+            const float y0 = center.y - halfSize.y, y1 = center.y + halfSize.y;
+            const float z0 = center.z - halfSize.z, z1 = center.z + halfSize.z;
+            addQuad({x0, y1, z0}, {x0, y1, z1}, {x1, y1, z1}, {x1, y1, z0}, {0, 1, 0}, color);
+            addQuad({x0, y0, z1}, {x0, y0, z0}, {x1, y0, z0}, {x1, y0, z1}, {0, -1, 0}, color * 0.55f);
+            addQuad({x1, y0, z0}, {x1, y1, z0}, {x1, y1, z1}, {x1, y0, z1}, {1, 0, 0}, color * 0.82f);
+            addQuad({x0, y0, z1}, {x0, y1, z1}, {x0, y1, z0}, {x0, y0, z0}, {-1, 0, 0}, color * 0.72f);
+            addQuad({x0, y0, z1}, {x1, y0, z1}, {x1, y1, z1}, {x0, y1, z1}, {0, 0, 1}, color * 0.92f);
+            addQuad({x1, y0, z0}, {x0, y0, z0}, {x0, y1, z0}, {x1, y1, z0}, {0, 0, -1}, color * 0.65f);
+        };
+
+        addBox({-1.35f, -0.35f, -2.1f}, {0.65f, 0.65f, 0.65f}, {0.95f, 0.12f, 0.055f});
+        addBox({1.2f, -0.6f, -3.45f}, {0.4f, 0.4f, 0.4f}, {0.05f, 0.55f, 0.95f});
+
+        const glm::vec3 sphereCenter{0.0f, -0.42f, -4.8f};
+        constexpr float sphereRadius = 0.58f;
+        constexpr int sphereRings = 12;
+        constexpr int sphereSegments = 24;
+        constexpr float pi = 3.14159265358979323846f;
+        const glm::vec3 sphereColor{0.95f, 0.62f, 0.04f};
+        auto sphereNormal = [&](int ring, int segment)
+        {
+            const float theta = pi * float(ring) / float(sphereRings);
+            const float phi = 2.0f * pi * float(segment) / float(sphereSegments);
+            return glm::vec3(std::sin(theta) * std::cos(phi), std::cos(theta), std::sin(theta) * std::sin(phi));
+        };
+        auto addSphereTriangle = [&](const glm::vec3 &normalA, const glm::vec3 &normalB, const glm::vec3 &normalC)
+        {
+            addVertex(sphereCenter + normalA * sphereRadius, normalA, sphereColor);
+            addVertex(sphereCenter + normalB * sphereRadius, normalB, sphereColor);
+            addVertex(sphereCenter + normalC * sphereRadius, normalC, sphereColor);
+        };
+        for (int ring = 0; ring < sphereRings; ++ring)
+        {
+            for (int segment = 0; segment < sphereSegments; ++segment)
+            {
+                const glm::vec3 a = sphereNormal(ring, segment);
+                const glm::vec3 b = sphereNormal(ring, segment + 1);
+                const glm::vec3 c = sphereNormal(ring + 1, segment + 1);
+                const glm::vec3 d = sphereNormal(ring + 1, segment);
+                if (ring > 0)
+                    addSphereTriangle(a, b, d);
+                if (ring + 1 < sphereRings)
+                    addSphereTriangle(b, c, d);
+            }
+        }
+
+        vertexCount = static_cast<uint32_t>(vertices.size());
         createBuffer(sizeof(Vertex) * vertices.size(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, vertexBuffer, vertexMemory);
         void *data;
         vkMapMemory(device, vertexMemory, 0, VK_WHOLE_SIZE, 0, &data);
@@ -967,8 +1037,8 @@ private:
     {
         CameraData camera{};
         camera.model = glm::mat4(1.0f);
-        camera.view = glm::lookAt(glm::vec3(0, 0, 0), glm::vec3(0, 0, -2.4f), glm::vec3(0, 1, 0));
-        camera.projection = glm::perspective(glm::radians(55.0f), float(swapchainExtent.width) / float(swapchainExtent.height), 0.1f, 20.0f);
+        camera.view = glm::lookAt(glm::vec3(0.0f, 4.0f, 7.5f), glm::vec3(0.0f, -0.65f, -2.5f), glm::vec3(0, 1, 0));
+        camera.projection = glm::perspective(glm::radians(55.0f), float(swapchainExtent.width) / float(swapchainExtent.height), 0.1f, 40.0f);
         camera.projection[1][1] *= -1.0f;
         camera.inverseProjection = glm::inverse(camera.projection);
         camera.inverseView = glm::inverse(camera.view);
@@ -1110,7 +1180,7 @@ private:
         VkDeviceSize offset = 0;
         vkCmdBindVertexBuffers(cmd, 0, 1, &vertexBuffer, &offset);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, scenePipelineLayout, 0, 1, &sceneSet, 0, nullptr);
-        vkCmdDraw(cmd, 3, 1, 0, 0);
+        vkCmdDraw(cmd, vertexCount, 1, 0, 0);
         vkCmdEndRenderPass(cmd);
 
         std::array<VkClearValue, 1> ssrClear{};

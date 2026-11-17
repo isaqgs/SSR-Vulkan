@@ -123,7 +123,7 @@ void main() {
     vec3 reflectedColor = texture(SceneColor, hitUV).rgb;
     float distanceFactor = 1.0 - clamp(hitDistance / params.maxDistance, 0.0, 1.0);
     float viewFactor = clamp(dot(normal, viewDirection), 0.0, 1.0);
-    float fresnelFactor = pow(1.0 - viewFactor, 5.0);
+    float fresnelFactor = pow(1.0 - viewFactor, 2.0);
     float reflectionFactor = clamp(params.intensity * distanceFactor * fresnelFactor, 0.0, 1.0);
 
     outColor = vec4(reflectedColor * reflectionFactor, reflectionFactor);
