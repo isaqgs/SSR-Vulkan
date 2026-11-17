@@ -1,0 +1,73 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[brazil]{babel}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{listings}
+\geometry{left=3cm,right=2cm,top=3cm,bottom=2cm}
+\title{Entrega 4 -- Integração do Código e Boilerplate Vulkan\\Screen-Space Reflections}
+\author{}
+\date{}
+\begin{document}
+\maketitle
+
+\section{Objetivo}
+Esta entrega transforma a arquitetura definida anteriormente para Screen-Space Reflections (SSR) em uma aplicação-base funcional em C++17 utilizando Vulkan. A implementação cria a instância, seleciona a GPU, cria o dispositivo lógico e as filas, configura a superfície e a swapchain, cria os recursos intermediários necessários ao SSR e executa três etapas de renderização: Scene Rendering, SSR e Composition.
+
+\section{Tecnologias e versões}
+O projeto foi estruturado para C++17 e Vulkan 1.2. São utilizadas GLFW para criação da janela e da superfície Vulkan, GLM para operações matriciais e o compilador \texttt{glslc}, fornecido pelo Vulkan SDK, para gerar SPIR-V a partir dos shaders GLSL.
+
+\section{Organização}
+\begin{itemize}
+\item \texttt{src/main.cpp}: inicialização Vulkan, GPU, swapchain, imagens, render passes, pipelines, descritores, sincronização, comandos, loop e limpeza.
+\item \texttt{shaders/scene.vert} e \texttt{scene.frag}: renderização da geometria e geração de SceneColor e NormalTexture.
+\item \texttt{shaders/ssr.vert} e \texttt{ssr.frag}: fullscreen triangle e algoritmo de SSR.
+\item \texttt{shaders/composite.vert} e \texttt{composite.frag}: composição de SceneColor e SSRResult.
+\item \texttt{CMakeLists.txt}: configuração de compilação e geração automática dos arquivos SPIR-V.
+\end{itemize}
+
+\section{Inicialização Vulkan}
+A aplicação cria uma instância Vulkan com as extensões exigidas pelo GLFW e, em builds de desenvolvimento, habilita \texttt{VK\_LAYER\_KHRONOS\_validation} e o debug messenger. A GPU é selecionada verificando filas gráfica e de apresentação, suporte à swapchain, anisotropia e extensões necessárias. Em seguida é criado o dispositivo lógico com as filas correspondentes.
+
+\section{Swapchain e apresentação}
+A superfície é criada por meio do GLFW. A aplicação consulta formatos, modos de apresentação e capacidades da superfície para selecionar a configuração da swapchain. São criadas as imagens e image views correspondentes. O loop utiliza \texttt{vkAcquireNextImageKHR}, submete os command buffers à fila gráfica e chama \texttt{vkQueuePresentKHR} para apresentação.
+
+\section{Pipeline de renderização}
+A implementação utiliza três render passes. O primeiro produz as informações necessárias ao SSR: SceneColor, SceneDepth e NormalTexture. O segundo executa o efeito sobre um fullscreen triangle e produz SSRResult. O terceiro combina SceneColor e SSRResult e grava o resultado na imagem da swapchain.
+
+As imagens intermediárias possuem uso de attachment e sampled image. Assim, uma mesma imagem pode ser escrita durante um render pass e posteriormente lida pelo fragment shader da etapa seguinte.
+
+\section{Integração dos shaders}
+Os shaders da Entrega 3 estavam descritos como pseudocódigo GLSL e utilizavam \texttt{\#version PSEUDOCODE 1.0}. Para esta entrega, sua lógica foi convertida para GLSL 4.50 real, mantendo o fluxo algorítmico definido anteriormente.
+
+O \texttt{ssr.vert} continua gerando um fullscreen triangle a partir de \texttt{gl\_VertexIndex}. O \texttt{ssr.frag} mantém os recursos do Descriptor Set 0: SceneColor, SceneDepth, NormalTexture, CameraUBO e SSRParameters. O shader reconstrói a posição em view space, calcula a direção de reflexão, projeta o raio para screen space, executa ray marching, testa a profundidade e, quando encontra uma interseção, amostra SceneColor e aplica a atenuação por distância e Fresnel simplificado.
+
+\section{Descritores}
+O pass de cena utiliza um uniform buffer para as matrizes da câmera. O pass de SSR utiliza cinco bindings: três combined image samplers, um CameraUBO e um buffer de parâmetros. A composição utiliza dois combined image samplers, correspondentes a SceneColor e SSRResult.
+
+\section{Sincronização}
+A dependência entre as etapas é expressa por dependências de subpass/render pass e transições de layout. SceneColor, SceneDepth e NormalTexture terminam o primeiro pass em \texttt{SHADER\_READ\_ONLY\_OPTIMAL}; SSRResult termina o segundo pass no mesmo layout para ser lido pela composição; a imagem da swapchain termina a composição em \texttt{PRESENT\_SRC\_KHR}. Semáforos e fences controlam a sincronização entre CPU, fila gráfica e apresentação.
+
+\section{Compilação}
+Com Vulkan SDK, GLFW, GLM, CMake e um compilador C++17 instalados:
+\begin{lstlisting}[language=bash]
+cmake -S . -B build
+cmake --build build -j
+\end{lstlisting}
+O CMake procura \texttt{glslc} e gera automaticamente os arquivos \texttt{.spv} em \texttt{build/shaders}. Os módulos SPIR-V são carregados pelo programa e transformados em \texttt{VkShaderModule} antes da criação dos pipelines.
+
+\section{Execução}
+No Linux, a aplicação pode ser executada com:
+\begin{lstlisting}[language=bash]
+./build/ssr_app
+\end{lstlisting}
+No Windows, em uma configuração Release:
+\begin{lstlisting}[language=bash]
+.\\build\\Release\\ssr_app.exe
+\end{lstlisting}
+
+\section{Estado atual e próximos passos}
+A entrega já possui o boilerplate Vulkan, a janela, a swapchain, os recursos intermediários, os pipelines, os shaders SPIR-V, os command buffers, a sincronização e o loop de apresentação. A geometria utilizada para demonstrar o funcionamento é intencionalmente simples. A estrutura permite substituir a cena de teste por uma cena mais complexa e evoluir o SSR com técnicas como refinamento de interseção, binary search, roughness e otimizações do ray marching.
+
+\end{document}
