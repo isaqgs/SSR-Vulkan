@@ -42,11 +42,12 @@ static_assert(offsetof(CameraData, inverseView) == 4 * sizeof(glm::mat4));
 
 struct SSRData
 {
-    int maxSteps = 64;
+    int maxSteps = 96;
     float maxDistance = 8.0f;
-    float stride = 0.015f;
-    float thickness = 0.15f;
+    float stride = 0.012f;
+    float thickness = 0.12f;
     float intensity = 1.5f;
+    int debugMode = 0;
 };
 
 struct QueueFamilyIndices
@@ -158,6 +159,8 @@ private:
     std::array<VkFence, MAX_FRAMES_IN_FLIGHT> inFlight{};
     size_t currentFrame = 0;
     bool framebufferResized = false;
+    bool ssrEnabled = true;
+    bool ssrDebugMode = false;
 
     const std::vector<const char *> validationLayers = {"VK_LAYER_KHRONOS_validation"};
 
@@ -177,8 +180,57 @@ private:
         if (!window)
             throw std::runtime_error("Window creation failed");
         glfwSetWindowUserPointer(window, this);
+        glfwSetKeyCallback(window, [](GLFWwindow *w, int key, int, int action, int)
+                           {
+                               VulkanSSRApp *app = static_cast<VulkanSSRApp *>(glfwGetWindowUserPointer(w));
+                               if (key == GLFW_KEY_F1 && action == GLFW_PRESS)
+                                   app->toggleSSR();
+                               if (key == GLFW_KEY_F2 && action == GLFW_PRESS)
+                                   app->toggleSSRDebug(); });
+        glfwSetMouseButtonCallback(window, [](GLFWwindow *w, int button, int action, int)
+                                   {
+                                       if (button != GLFW_MOUSE_BUTTON_LEFT || action != GLFW_PRESS)
+                                           return;
+                                       double x = 0.0, y = 0.0;
+                                       int width = 0, height = 0;
+                                       glfwGetCursorPos(w, &x, &y);
+                                       glfwGetWindowSize(w, &width, &height);
+                                       if (width > 0 && height > 0 &&
+                                           x >= width * 0.02 && x <= width * 0.22 &&
+                                           y >= height * 0.02 && y <= height * 0.09)
+                                           static_cast<VulkanSSRApp *>(glfwGetWindowUserPointer(w))->toggleSSR(); });
         glfwSetFramebufferSizeCallback(window, [](GLFWwindow *w, int, int)
                                        { static_cast<VulkanSSRApp *>(glfwGetWindowUserPointer(w))->framebufferResized = true; });
+        updateWindowTitle();
+    }
+
+    void updateWindowTitle() const
+    {
+        glfwSetWindowTitle(window, ssrEnabled
+                                       ? "SSR - Entrega 4 | SSR: ON (click no botao ou F1)"
+                                       : "SSR - Entrega 4 | SSR: OFF (click no botao ou F1)");
+    }
+
+    void toggleSSR()
+    {
+        ssrEnabled = !ssrEnabled;
+        updateWindowTitle();
+    }
+
+    void toggleSSRDebug()
+    {
+        ssrDebugMode = !ssrDebugMode;
+        updateSSRDebugUniform();
+    }
+
+    void updateSSRDebugUniform()
+    {
+        SSRData params{};
+        params.debugMode = ssrDebugMode ? 1 : 0;
+        void *data;
+        vkMapMemory(device, ssrMemory, 0, sizeof(params), 0, &data);
+        memcpy(data, &params, sizeof(params));
+        vkUnmapMemory(device, ssrMemory);
     }
 
     void initVulkan()
@@ -773,6 +825,11 @@ private:
         VkPipelineLayoutCreateInfo cl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         cl.setLayoutCount = 1;
         cl.pSetLayouts = &compositeSetLayout;
+        VkPushConstantRange compositeOptionsRange{};
+        compositeOptionsRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        compositeOptionsRange.size = sizeof(uint32_t);
+        cl.pushConstantRangeCount = 1;
+        cl.pPushConstantRanges = &compositeOptionsRange;
         vkCreatePipelineLayout(device, &cl, nullptr, &compositePipelineLayout);
 
         VkPipelineVertexInputStateCreateInfo vertexInput{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
@@ -1047,6 +1104,7 @@ private:
         memcpy(data, &camera, sizeof(camera));
         vkUnmapMemory(device, cameraMemory);
         SSRData params{};
+        params.debugMode = ssrDebugMode ? 1 : 0;
         vkMapMemory(device, ssrMemory, 0, sizeof(params), 0, &data);
         memcpy(data, &params, sizeof(params));
         vkUnmapMemory(device, ssrMemory);
@@ -1216,6 +1274,8 @@ private:
         vkCmdSetViewport(cmd, 0, 1, &cvp);
         vkCmdSetScissor(cmd, 0, 1, &csc);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, compositePipelineLayout, 0, 1, &compositeSet, 0, nullptr);
+        const uint32_t ssrMode = ssrEnabled ? 1u : 0u;
+        vkCmdPushConstants(cmd, compositePipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(ssrMode), &ssrMode);
         vkCmdDraw(cmd, 3, 1, 0, 0);
         vkCmdEndRenderPass(cmd);
 

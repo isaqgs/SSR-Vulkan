@@ -21,6 +21,7 @@ layout(set = 0, binding = 4) uniform SSRParameters {
     float stride;
     float thickness;
     float intensity;
+    int debugMode;
 } params;
 
 vec3 reconstructViewPosition(vec2 uv, float depth) {
@@ -78,28 +79,25 @@ void main() {
         return;
     }
 
-    vec2 screenDelta = rayEndUV - rayStartUV;
-    float screenLength = length(screenDelta);
-    if (screenLength < 0.000001) {
-        outColor = vec4(0.0);
-        return;
-    }
-
-    int stepCount = int(ceil(screenLength / max(params.stride, 0.0001)));
-    stepCount = clamp(stepCount, 1, params.maxSteps);
-    vec2 uvStep = screenDelta / float(stepCount);
+    float worldStep = max(params.stride, 0.0001);
 
     bool hit = false;
     vec2 hitUV = vec2(0.0);
     float hitDistance = 0.0;
+    float previousDifference = 0.0;
+    bool hasPreviousDifference = false;
 
+    int stepCount = clamp(params.maxSteps, 1, 256);
     for (int i = 1; i <= stepCount; ++i) {
-        vec2 sampleUV = rayStartUV + uvStep * float(i);
+        hitDistance = worldStep * float(i);
+        if (hitDistance > params.maxDistance)
+            break;
+
+        vec3 rayPosition = rayOrigin + reflectionDirection * hitDistance;
+        vec2 sampleUV = projectToUV(rayPosition);
         if (!insideScreen(sampleUV))
             break;
 
-        float t = float(i) / float(stepCount);
-        vec3 rayPosition = rayOrigin + reflectionDirection * (params.maxDistance * t);
         float sceneDepth = texture(SceneDepth, sampleUV).r;
         if (sceneDepth <= 0.0 || sceneDepth >= 1.0)
             continue;
@@ -107,24 +105,67 @@ void main() {
         vec3 scenePosition = reconstructViewPosition(sampleUV, sceneDepth);
         float depthDifference = rayPosition.z - scenePosition.z;
 
-        if (depthDifference >= 0.0 && depthDifference <= params.thickness) {
-            hit = true;
-            hitUV = sampleUV;
-            hitDistance = length(rayPosition - rayOrigin);
+        bool crossedSurface = hasPreviousDifference &&
+                              previousDifference * depthDifference <= 0.0;
+        bool withinThickness = abs(depthDifference) <= params.thickness;
+
+        if (crossedSurface && withinThickness && hitDistance >= 0.05) {
+            float loDistance = hitDistance - worldStep;
+            float hiDistance = hitDistance;
+
+            for (int refine = 0; refine < 6; ++refine) {
+                float midDistance = (loDistance + hiDistance) * 0.5;
+                vec3 midRayPosition = rayOrigin + reflectionDirection * midDistance;
+                vec2 midUV = projectToUV(midRayPosition);
+
+                if (!insideScreen(midUV)) {
+                    loDistance = midDistance;
+                    continue;
+                }
+
+                float midSceneDepth = texture(SceneDepth, midUV).r;
+                if (midSceneDepth <= 0.0 || midSceneDepth >= 1.0) {
+                    loDistance = midDistance;
+                    continue;
+                }
+
+                vec3 midScenePosition = reconstructViewPosition(midUV, midSceneDepth);
+                float midDifference = midRayPosition.z - midScenePosition.z;
+
+                if (midDifference >= -params.thickness && midDifference <= params.thickness)
+                    hiDistance = midDistance;
+                else
+                    loDistance = midDistance;
+            }
+
+            hitDistance = (loDistance + hiDistance) * 0.5;
+            vec3 hitPosition = rayOrigin + reflectionDirection * hitDistance;
+            hitUV = projectToUV(hitPosition);
+            hit = insideScreen(hitUV);
             break;
         }
+
+        previousDifference = depthDifference;
+        hasPreviousDifference = true;
     }
 
     if (!hit) {
-        outColor = vec4(0.0);
+        outColor = params.debugMode != 0 ? vec4(0.0, 0.0, 0.0, 1.0) : vec4(0.0);
+        return;
+    }
+
+    if (params.debugMode != 0) {
+        outColor = vec4(1.0, 0.0, 0.0, 1.0);
         return;
     }
 
     vec3 reflectedColor = texture(SceneColor, hitUV).rgb;
     float distanceFactor = 1.0 - clamp(hitDistance / params.maxDistance, 0.0, 1.0);
+    float edgeFactor = smoothstep(0.0, 0.08, hitUV.x) * smoothstep(0.0, 0.08, 1.0 - hitUV.x);
+    edgeFactor *= smoothstep(0.0, 0.08, hitUV.y) * smoothstep(0.0, 0.08, 1.0 - hitUV.y);
     float viewFactor = clamp(dot(normal, viewDirection), 0.0, 1.0);
     float fresnelFactor = pow(1.0 - viewFactor, 2.0);
-    float reflectionFactor = clamp(params.intensity * distanceFactor * fresnelFactor, 0.0, 1.0);
+    float reflectionFactor = clamp(params.intensity * distanceFactor * edgeFactor * fresnelFactor, 0.0, 1.0);
 
     outColor = vec4(reflectedColor * reflectionFactor, reflectionFactor);
 }

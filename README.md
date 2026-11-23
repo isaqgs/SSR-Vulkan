@@ -1,8 +1,8 @@
 # Screen-Space Reflections com Vulkan
 
-Projeto acadêmico em C++17 que inicializa Vulkan e integra um pipeline de três etapas: renderização da cena, cálculo de Screen-Space Reflections (SSR) e composição da imagem final.
+Projeto acadêmico em C++17 que inicializa Vulkan e integra um pipeline de três etapas: renderização da cena, cálculo de Screen-Space Reflections (SSR) e composição da imagem final. Clique no botão colorido no canto superior esquerdo ou pressione **F1** para alternar entre a cena normal e a cena com SSR; o estado atual aparece no título da janela.
 
-O programa atualmente mostra um triângulo colorido sobre um fundo escuro. O passe SSR está integrado, mas esta cena simples não produz um reflexo claramente visível: ela não contém uma superfície refletora ou outros objetos que formem uma imagem de reflexão interessante.
+O programa apresenta uma cena com chão, dois cubos coloridos e uma esfera sobre um fundo escuro. O passe SSR usa os dados de cor, profundidade e normais da cena para gerar reflexos.
 
 ## Tecnologias
 
@@ -94,9 +94,9 @@ Get-ChildItem build\shaders\*.spv | ForEach-Object {
 
 ## O que esperar
 
-Ao executar, deve abrir uma janela com fundo escuro e um triângulo colorido centralizado. Redimensionar a janela recria a swapchain e seus recursos associados.
+Ao executar, deve abrir uma janela com a cena e o SSR ativado. O título indica o estado atual; clique no botão colorido no canto superior esquerdo ou pressione **F1** para alternar o SSR. Redimensionar a janela recria a swapchain e seus recursos associados.
 
-O pipeline SSR usa cor, profundidade e normais da cena para procurar uma interseção ao longo de um raio refletido. O resultado é somado à imagem original. Como a cena atual contém apenas um triângulo frontal, ela serve para conferir o boilerplate, mas não demonstra reflexos evidentes.
+O pipeline SSR usa cor, profundidade e normais da cena para procurar uma interseção ao longo de um raio refletido. Quando o SSR está desativado, a composição exibe somente a cor normal da cena.
 
 ## Solução de problemas
 
