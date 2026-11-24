@@ -48,7 +48,11 @@ vec3 visualizeBuffer(vec2 uv) {
     }
     if (options.visualizerMode == 4)
         return vec3(texture(SSRResult, uv).a);
-    return texture(SSRResult, uv).rgb;
+    if (options.visualizerMode == 5)
+        return texture(SSRResult, uv).rgb;
+    if (texture(SceneDepth, uv).r >= 1.0)
+        return vec3(0.0);
+    return vec3(texture(NormalTexture, uv).a);
 }
 
 void main() {

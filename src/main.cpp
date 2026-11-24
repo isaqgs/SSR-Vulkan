@@ -52,6 +52,15 @@ struct CompositeOptions
 
 static_assert(sizeof(CompositeOptions) == 3 * sizeof(uint32_t));
 
+struct ScenePushConstants
+{
+    glm::mat4 model;
+    float roughness;
+};
+
+static_assert(offsetof(ScenePushConstants, roughness) == sizeof(glm::mat4));
+static_assert(sizeof(ScenePushConstants) == sizeof(glm::mat4) + sizeof(float));
+
 struct SSRData
 {
     int maxSteps = 144;
@@ -82,6 +91,7 @@ struct SceneObject
     glm::vec2 offset{0.0f};
     glm::vec2 velocity{0.0f};
     glm::quat orientation{1.0f, 0.0f, 0.0f, 0.0f};
+    float roughness = 0.5f;
 };
 
 struct QueueFamilyIndices
@@ -307,6 +317,8 @@ private:
             return "Acertos SSR";
         case 5:
             return "Distancia dos raios";
+        case 6:
+            return "Rugosidade";
         default:
             return "Imagem final";
         }
@@ -321,7 +333,7 @@ private:
     void cycleBufferView()
     {
         comparisonEnabled = false;
-        bufferViewMode = (bufferViewMode + 1) % 6;
+        bufferViewMode = (bufferViewMode + 1) % 7;
         updateWindowTitle();
     }
 
@@ -1070,7 +1082,7 @@ private:
         sl.pSetLayouts = &sceneSetLayout;
         VkPushConstantRange objectTransformRange{};
         objectTransformRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-        objectTransformRange.size = sizeof(glm::mat4);
+        objectTransformRange.size = sizeof(ScenePushConstants);
         sl.pushConstantRangeCount = 1;
         sl.pPushConstantRanges = &objectTransformRange;
         vkCreatePipelineLayout(device, &sl, nullptr, &scenePipelineLayout);
@@ -1296,29 +1308,31 @@ private:
             addQuad({x1, y0, z0}, {x0, y0, z0}, {x0, y1, z0}, {x1, y1, z0}, {0, 0, -1}, color * 0.65f);
         };
 
-        auto addObjectBox = [&](const glm::vec3 &center, const glm::vec3 &halfSize, const glm::vec3 &color)
+        auto addObjectBox = [&](const glm::vec3 &center, const glm::vec3 &halfSize, const glm::vec3 &color, float roughness)
         {
             SceneObject object{};
             object.shape = ObjectShape::Box;
             object.firstVertex = static_cast<uint32_t>(vertices.size());
             object.pivot = center;
             object.halfSize = halfSize;
+            object.roughness = roughness;
             addBox(center, halfSize, color);
             object.vertexCount = static_cast<uint32_t>(vertices.size()) - object.firstVertex;
             sceneObjects.push_back(object);
         };
 
-        addObjectBox({-1.35f, -0.35f, -2.1f}, {0.65f, 0.65f, 0.65f}, {0.95f, 0.12f, 0.055f});
-        addObjectBox({1.2f, -0.6f, -3.45f}, {0.4f, 0.4f, 0.4f}, {0.05f, 0.55f, 0.95f});
+        addObjectBox({-1.35f, -0.35f, -2.1f}, {0.65f, 0.65f, 0.65f}, {0.95f, 0.12f, 0.055f}, 0.08f);
+        addObjectBox({1.2f, -0.6f, -3.45f}, {0.4f, 0.4f, 0.4f}, {0.05f, 0.55f, 0.95f}, 0.38f);
 
         constexpr float pi = 3.14159265358979323846f;
-        auto addSphere = [&](const glm::vec3 &sphereCenter, float sphereRadius, const glm::vec3 &sphereColor)
+        auto addSphere = [&](const glm::vec3 &sphereCenter, float sphereRadius, const glm::vec3 &sphereColor, float roughness)
         {
             SceneObject object{};
             object.shape = ObjectShape::Sphere;
             object.firstVertex = static_cast<uint32_t>(vertices.size());
             object.pivot = sphereCenter;
             object.radius = sphereRadius;
+            object.roughness = roughness;
             constexpr int sphereRings = 32;
             constexpr int sphereSegments = 64;
             auto sphereNormal = [&](int ring, int segment)
@@ -1350,9 +1364,9 @@ private:
             object.vertexCount = static_cast<uint32_t>(vertices.size()) - object.firstVertex;
             sceneObjects.push_back(object);
         };
-        addObjectBox({2.65f, -0.55f, -2.2f}, {0.45f, 0.45f, 0.45f}, {0.48f, 0.16f, 0.82f});
-        addSphere({0.0f, -0.42f, -4.8f}, 0.58f, {0.95f, 0.62f, 0.04f});
-        addSphere({-2.65f, -0.64f, -3.1f}, 0.36f, {0.08f, 0.78f, 0.48f});
+        addObjectBox({2.65f, -0.55f, -2.2f}, {0.45f, 0.45f, 0.45f}, {0.48f, 0.16f, 0.82f}, 0.82f);
+        addSphere({0.0f, -0.42f, -4.8f}, 0.58f, {0.95f, 0.62f, 0.04f}, 0.18f);
+        addSphere({-2.65f, -0.64f, -3.1f}, 0.36f, {0.08f, 0.78f, 0.48f}, 0.68f);
 
         createBuffer(sizeof(Vertex) * vertices.size(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, vertexBuffer, vertexMemory);
         void *data;
@@ -1391,7 +1405,7 @@ private:
         SSRData params{};
         if (bufferViewMode == 5)
             params.debugMode = 1;
-        else if (bufferViewMode == 1 || bufferViewMode == 2 || bufferViewMode == 3)
+        else if (bufferViewMode == 1 || bufferViewMode == 2 || bufferViewMode == 3 || bufferViewMode == 6)
             params.debugMode = 2;
         vkMapMemory(device, ssrMemories[frameIndex], 0, sizeof(params), 0, &data);
         memcpy(data, &params, sizeof(params));
@@ -1549,16 +1563,18 @@ private:
         VkDeviceSize offset = 0;
         vkCmdBindVertexBuffers(cmd, 0, 1, &vertexBuffer, &offset);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, scenePipelineLayout, 0, 1, &sceneSets[frameIndex], 0, nullptr);
-        glm::mat4 floorTransform(1.0f);
+        const ScenePushConstants floorTransform{glm::mat4(1.0f), 0.85f};
         vkCmdPushConstants(cmd, scenePipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(floorTransform), &floorTransform);
         vkCmdDraw(cmd, floorVertexCount, 1, 0, 0);
         for (const SceneObject &object : sceneObjects)
         {
             const glm::vec3 translatedPivot = object.pivot + glm::vec3(object.offset.x, 0.0f, object.offset.y);
-            const glm::mat4 model = glm::translate(glm::mat4(1.0f), translatedPivot) *
-                                    glm::mat4_cast(object.orientation) *
-                                    glm::translate(glm::mat4(1.0f), -object.pivot);
-            vkCmdPushConstants(cmd, scenePipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(model), &model);
+            const ScenePushConstants transform{
+                glm::translate(glm::mat4(1.0f), translatedPivot) *
+                    glm::mat4_cast(object.orientation) *
+                    glm::translate(glm::mat4(1.0f), -object.pivot),
+                object.roughness};
+            vkCmdPushConstants(cmd, scenePipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(transform), &transform);
             vkCmdDraw(cmd, object.vertexCount, 1, object.firstVertex, 0);
         }
         vkCmdEndRenderPass(cmd);

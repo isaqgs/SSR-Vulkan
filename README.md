@@ -2,12 +2,12 @@
 
 Projeto acadêmico em C++17 que inicializa Vulkan e integra um pipeline de três etapas: renderização da cena, cálculo de Screen-Space Reflections (SSR) e composição da imagem final. Pressione **F1** para alternar entre a cena normal e a cena com SSR; o título da janela mostra os controles, a visualização F2 atual, o estado do SSR, FPS e tempo médio por frame.
 
-O programa apresenta uma cena iluminada com chão quadriculado, três cubos e duas esferas suaves. O passe SSR usa cor, profundidade e normais da cena para traçar reflexos em espaço de tela, com refinamento da interseção.
+O programa apresenta uma cena iluminada com chão quadriculado, três cubos e duas esferas suaves. Cada objeto e o chão têm um valor de roughness próprio: cubo vermelho 0,08, cubo azul 0,38, cubo roxo 0,82, esfera amarela 0,18, esfera verde 0,68 e chão 0,85. Superfícies lisas exibem reflexos mais nítidos, enquanto superfícies rugosas espalham o reflexo com uma aproximação por amostras da cor da cena.
 
 ### Controles durante a demonstração
 
 - **F1**: liga/desliga SSR.
-- **F2**: percorre a saída final, SceneColor, profundidade linearizada, normais, máscara de acertos SSR e mapa de distância dos raios.
+- **F2**: percorre a saída final, SceneColor, profundidade linearizada, normais, máscara de acertos SSR, mapa de distância dos raios e mapa de roughness (tons escuros = mais liso; tons claros = mais rugoso).
 - **F3**: comparação lado a lado; metade esquerda com SSR e metade direita sem SSR.
 - **W/A/S/D**: movimenta a câmera pelo cenário, com colisão contra os objetos e os limites do chão.
 - **Segurar o botão direito + mover o mouse**: olha ao redor; solte o botão para liberar o cursor.
@@ -108,7 +108,7 @@ Get-ChildItem build\shaders\*.spv | ForEach-Object {
 
 Ao executar, deve abrir uma janela com a cena e o SSR ativado. O título indica o estado do efeito e atualiza o FPS e o tempo médio por frame duas vezes por segundo. Use **F1** para alternar o SSR, **F2** para inspecionar os buffers intermediários ou **F3** para comparar SSR ligado e desligado simultaneamente. Redimensionar a janela recria a swapchain e seus recursos associados.
 
-O pipeline SSR usa cor, profundidade e normais da cena para percorrer o raio refletido até 12 unidades, fazer até 144 amostras e refinar uma interseção encontrada com busca binária. A profundidade e as normais usam amostragem pontual para evitar misturar superfícies diferentes; a cor refletida usa amostragem linear. A composição aplica atenuação por distância, borda e Fresnel. Quando o SSR está desativado, a composição exibe somente a cena iluminada.
+O pipeline SSR usa cor, profundidade e normais da cena para percorrer o raio refletido até 12 unidades, fazer até 144 amostras e refinar uma interseção encontrada com busca binária. O canal alpha de NormalTexture guarda roughness por material. A roughness controla o espalhamento da cor refletida com uma filtragem de nove amostras, uma aproximação visual para superfícies rugosas e não uma integração completa de múltiplos raios. A profundidade e as normais usam amostragem pontual para evitar misturar superfícies diferentes; a cor refletida usa amostragem linear. A composição aplica atenuação por distância, borda e Fresnel. Quando o SSR está desativado, a composição exibe somente a cena iluminada.
 
 Os buffers de câmera e parâmetros são separados por frame em voo, permitindo atualizar a câmera sem sobrescrever dados ainda utilizados pela GPU. Ao redimensionar a janela, a swapchain e os descritores são recriados.
 

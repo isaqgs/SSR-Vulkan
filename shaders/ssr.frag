@@ -52,6 +52,24 @@ vec3 decodeNormal(vec3 encodedNormal) {
     return n / lengthN;
 }
 
+vec3 sampleRoughReflection(vec2 uv, float roughness) {
+    if (roughness <= 0.001)
+        return texture(SceneColor, uv).rgb;
+
+    vec2 texelSize = 1.0 / vec2(textureSize(SceneColor, 0));
+    vec2 offset = texelSize * (roughness * 8.0);
+    vec3 color = texture(SceneColor, uv).rgb * 4.0;
+    color += texture(SceneColor, uv + vec2(offset.x, 0.0)).rgb * 2.0;
+    color += texture(SceneColor, uv - vec2(offset.x, 0.0)).rgb * 2.0;
+    color += texture(SceneColor, uv + vec2(0.0, offset.y)).rgb * 2.0;
+    color += texture(SceneColor, uv - vec2(0.0, offset.y)).rgb * 2.0;
+    color += texture(SceneColor, uv + offset).rgb;
+    color += texture(SceneColor, uv - offset).rgb;
+    color += texture(SceneColor, uv + vec2(offset.x, -offset.y)).rgb;
+    color += texture(SceneColor, uv + vec2(-offset.x, offset.y)).rgb;
+    return color / 16.0;
+}
+
 void main() {
     if (params.debugMode == 2) {
         outColor = vec4(0.0);
@@ -64,7 +82,9 @@ void main() {
         return;
     }
 
-    vec3 normal = decodeNormal(texture(NormalTexture, fragUV).rgb);
+    vec4 surfaceData = texture(NormalTexture, fragUV);
+    vec3 normal = decodeNormal(surfaceData.rgb);
+    float roughness = clamp(surfaceData.a, 0.0, 1.0);
     vec3 origin = reconstructViewPosition(fragUV, depth);
     vec3 viewDirection = normalize(-origin);
     vec3 reflectionDirection = normalize(reflect(-viewDirection, normal));
@@ -172,7 +192,7 @@ void main() {
         return;
     }
 
-    vec3 reflectedColor = texture(SceneColor, hitUV).rgb;
+    vec3 reflectedColor = sampleRoughReflection(hitUV, roughness);
     float distanceFactor = 1.0 - smoothstep(params.maxDistance * 0.12, params.maxDistance, hitDistance);
     float edgeFactor = smoothstep(0.0, 0.08, hitUV.x) * smoothstep(0.0, 0.08, 1.0 - hitUV.x);
     edgeFactor *= smoothstep(0.0, 0.08, hitUV.y) * smoothstep(0.0, 0.08, 1.0 - hitUV.y);
