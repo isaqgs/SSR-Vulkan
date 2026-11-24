@@ -53,6 +53,11 @@ vec3 decodeNormal(vec3 encodedNormal) {
 }
 
 void main() {
+    if (params.debugMode == 2) {
+        outColor = vec4(0.0);
+        return;
+    }
+
     float depth = texture(SceneDepth, fragUV).r;
     if (depth <= 0.0 || depth >= 1.0) {
         outColor = vec4(0.0);
@@ -157,7 +162,7 @@ void main() {
     }
 
     if (!hit) {
-        outColor = params.debugMode != 0 ? vec4(0.0, 0.0, 0.0, 1.0) : vec4(0.0);
+        outColor = vec4(0.0);
         return;
     }
 
@@ -175,5 +180,5 @@ void main() {
     float fresnelFactor = 0.12 + 0.88 * pow(1.0 - viewFactor, 4.0);
     float reflectionFactor = clamp(params.intensity * distanceFactor * edgeFactor * fresnelFactor * hitConfidence, 0.0, 1.0);
 
-    outColor = vec4(reflectedColor * reflectionFactor, reflectionFactor);
+    outColor = vec4(reflectedColor * reflectionFactor, 1.0);
 }

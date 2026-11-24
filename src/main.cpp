@@ -43,6 +43,15 @@ static_assert(offsetof(CameraData, projection) == 2 * sizeof(glm::mat4));
 static_assert(offsetof(CameraData, inverseProjection) == 3 * sizeof(glm::mat4));
 static_assert(offsetof(CameraData, inverseView) == 4 * sizeof(glm::mat4));
 
+struct CompositeOptions
+{
+    uint32_t ssrEnabled;
+    uint32_t visualizerMode;
+    uint32_t comparisonEnabled;
+};
+
+static_assert(sizeof(CompositeOptions) == 3 * sizeof(uint32_t));
+
 struct SSRData
 {
     int maxSteps = 144;
@@ -145,7 +154,7 @@ private:
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
     std::array<VkDescriptorSet, MAX_FRAMES_IN_FLIGHT> sceneSets{};
     std::array<VkDescriptorSet, MAX_FRAMES_IN_FLIGHT> ssrSets{};
-    VkDescriptorSet compositeSet = VK_NULL_HANDLE;
+    std::array<VkDescriptorSet, MAX_FRAMES_IN_FLIGHT> compositeSets{};
 
     VkCommandPool commandPool = VK_NULL_HANDLE;
     std::vector<VkCommandBuffer> commandBuffers;
@@ -187,7 +196,8 @@ private:
     size_t currentFrame = 0;
     bool framebufferResized = false;
     bool ssrEnabled = true;
-    bool ssrDebugMode = false;
+    uint32_t bufferViewMode = 0;
+    bool comparisonEnabled = false;
     bool cameraLooking = false;
     bool firstMouseMovement = true;
     double lastCursorX = 0.0;
@@ -228,7 +238,9 @@ private:
                                if (key == GLFW_KEY_F1 && action == GLFW_PRESS)
                                    app->toggleSSR();
                                if (key == GLFW_KEY_F2 && action == GLFW_PRESS)
-                                   app->toggleSSRDebug(); });
+                                   app->cycleBufferView();
+                               if (key == GLFW_KEY_F3 && action == GLFW_PRESS)
+                                   app->toggleComparison(); });
         glfwSetMouseButtonCallback(window, [](GLFWwindow *w, int button, int action, int)
                                    {
                                        if (button != GLFW_MOUSE_BUTTON_RIGHT)
@@ -264,19 +276,40 @@ private:
     void updateWindowTitle() const
     {
         char title[192];
+        const char *f2Description = comparisonEnabled ? "ciclo de buffers" : bufferViewName();
+        const char *f3Description = comparisonEnabled ? "A/B esq SSR/dir sem" : "comparar A/B";
         if (displayedFps > 0.0f)
         {
             std::snprintf(title, sizeof(title),
-                          "SSR Vulkan | %s | %.0f FPS | %.1f ms/frame | F1 SSR | F2 debug | WASD | RMB olhar",
-                          ssrEnabled ? "SSR ON" : "SSR OFF", displayedFps, displayedFrameTimeMs);
+                          "SSR Vulkan | F1: SSR %s | F2: %s | F3: %s | %.0f FPS | %.1f ms/frame",
+                          ssrEnabled ? "ON" : "OFF", f2Description, f3Description, displayedFps, displayedFrameTimeMs);
         }
         else
         {
             std::snprintf(title, sizeof(title),
-                          "SSR Vulkan | %s | F1 SSR | F2 debug | WASD | RMB olhar",
-                          ssrEnabled ? "SSR ON" : "SSR OFF");
+                          "SSR Vulkan | F1: SSR %s | F2: %s | F3: %s",
+                          ssrEnabled ? "ON" : "OFF", f2Description, f3Description);
         }
         glfwSetWindowTitle(window, title);
+    }
+
+    const char *bufferViewName() const
+    {
+        switch (bufferViewMode)
+        {
+        case 1:
+            return "Cor da cena";
+        case 2:
+            return "Profundidade";
+        case 3:
+            return "Normais";
+        case 4:
+            return "Acertos SSR";
+        case 5:
+            return "Distancia dos raios";
+        default:
+            return "Imagem final";
+        }
     }
 
     void toggleSSR()
@@ -285,9 +318,18 @@ private:
         updateWindowTitle();
     }
 
-    void toggleSSRDebug()
+    void cycleBufferView()
     {
-        ssrDebugMode = !ssrDebugMode;
+        comparisonEnabled = false;
+        bufferViewMode = (bufferViewMode + 1) % 6;
+        updateWindowTitle();
+    }
+
+    void toggleComparison()
+    {
+        comparisonEnabled = !comparisonEnabled;
+        bufferViewMode = 0;
+        updateWindowTitle();
     }
 
     glm::vec2 objectCenter(const SceneObject &object, const glm::vec2 &offset) const
@@ -979,11 +1021,14 @@ private:
         if (vkCreateDescriptorSetLayout(device, &ssrInfo, nullptr, &ssrSetLayout) != VK_SUCCESS)
             throw std::runtime_error("SSR descriptor layout failed");
 
-        std::array<VkDescriptorSetLayoutBinding, 2> compBindings{
+        std::array<VkDescriptorSetLayoutBinding, 5> compBindings{
             VkDescriptorSetLayoutBinding{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
-            VkDescriptorSetLayoutBinding{1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
+            VkDescriptorSetLayoutBinding{1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+            VkDescriptorSetLayoutBinding{2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+            VkDescriptorSetLayoutBinding{3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+            VkDescriptorSetLayoutBinding{4, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
         VkDescriptorSetLayoutCreateInfo compInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-        compInfo.bindingCount = 2;
+        compInfo.bindingCount = static_cast<uint32_t>(compBindings.size());
         compInfo.pBindings = compBindings.data();
         if (vkCreateDescriptorSetLayout(device, &compInfo, nullptr, &compositeSetLayout) != VK_SUCCESS)
             throw std::runtime_error("Composite descriptor layout failed");
@@ -1038,7 +1083,7 @@ private:
         cl.pSetLayouts = &compositeSetLayout;
         VkPushConstantRange compositeOptionsRange{};
         compositeOptionsRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        compositeOptionsRange.size = sizeof(uint32_t);
+        compositeOptionsRange.size = sizeof(CompositeOptions);
         cl.pushConstantRangeCount = 1;
         cl.pPushConstantRanges = &compositeOptionsRange;
         vkCreatePipelineLayout(device, &cl, nullptr, &compositePipelineLayout);
@@ -1344,7 +1389,10 @@ private:
         memcpy(data, &camera, sizeof(camera));
         vkUnmapMemory(device, cameraMemories[frameIndex]);
         SSRData params{};
-        params.debugMode = ssrDebugMode ? 1 : 0;
+        if (bufferViewMode == 5)
+            params.debugMode = 1;
+        else if (bufferViewMode == 1 || bufferViewMode == 2 || bufferViewMode == 3)
+            params.debugMode = 2;
         vkMapMemory(device, ssrMemories[frameIndex], 0, sizeof(params), 0, &data);
         memcpy(data, &params, sizeof(params));
         vkUnmapMemory(device, ssrMemories[frameIndex]);
@@ -1375,26 +1423,26 @@ private:
     void createDescriptorPool()
     {
         std::array<VkDescriptorPoolSize, 2> sizes{
-            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT * 3)},
-            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT * 3 + 2)}};
+            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT * 4)},
+            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT * 7)}};
         VkDescriptorPoolCreateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         info.poolSizeCount = 2;
         info.pPoolSizes = sizes.data();
-        info.maxSets = MAX_FRAMES_IN_FLIGHT * 2 + 1;
+        info.maxSets = MAX_FRAMES_IN_FLIGHT * 3;
         if (vkCreateDescriptorPool(device, &info, nullptr, &descriptorPool) != VK_SUCCESS)
             throw std::runtime_error("Descriptor pool failed");
     }
 
     void createDescriptorSets()
     {
-        std::array<VkDescriptorSetLayout, MAX_FRAMES_IN_FLIGHT * 2 + 1> layouts{};
+        std::array<VkDescriptorSetLayout, MAX_FRAMES_IN_FLIGHT * 3> layouts{};
         for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
         {
             layouts[i] = sceneSetLayout;
             layouts[MAX_FRAMES_IN_FLIGHT + i] = ssrSetLayout;
+            layouts[MAX_FRAMES_IN_FLIGHT * 2 + i] = compositeSetLayout;
         }
-        layouts.back() = compositeSetLayout;
-        std::array<VkDescriptorSet, MAX_FRAMES_IN_FLIGHT * 2 + 1> sets{};
+        std::array<VkDescriptorSet, MAX_FRAMES_IN_FLIGHT * 3> sets{};
         VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
         alloc.descriptorPool = descriptorPool;
         alloc.descriptorSetCount = static_cast<uint32_t>(layouts.size());
@@ -1404,10 +1452,15 @@ private:
         VkDescriptorImageInfo color{sampler, sceneColorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkDescriptorImageInfo depth{nearestSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkDescriptorImageInfo normal{nearestSampler, sceneNormalView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkDescriptorImageInfo compScene{sampler, sceneColorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkDescriptorImageInfo compSSR{sampler, ssrResultView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkDescriptorImageInfo compDepth{nearestSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkDescriptorImageInfo compNormal{nearestSampler, sceneNormalView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
         {
             sceneSets[i] = sets[i];
             ssrSets[i] = sets[MAX_FRAMES_IN_FLIGHT + i];
+            compositeSets[i] = sets[MAX_FRAMES_IN_FLIGHT * 2 + i];
             VkDescriptorBufferInfo cam{cameraBuffers[i], 0, sizeof(CameraData)};
             VkWriteDescriptorSet sw{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
             sw.dstSet = sceneSets[i];
@@ -1431,17 +1484,21 @@ private:
             qw[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, ssrSets[i], 4, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, nullptr, nullptr};
             qw[4].pBufferInfo = &params;
             vkUpdateDescriptorSets(device, static_cast<uint32_t>(qw.size()), qw.data(), 0, nullptr);
-        }
 
-        compositeSet = sets.back();
-        VkDescriptorImageInfo compScene{sampler, sceneColorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        VkDescriptorImageInfo compSSR{sampler, ssrResultView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        std::array<VkWriteDescriptorSet, 2> cw{};
-        cw[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, compositeSet, 0, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, nullptr, nullptr};
-        cw[0].pImageInfo = &compScene;
-        cw[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, compositeSet, 1, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, nullptr, nullptr};
-        cw[1].pImageInfo = &compSSR;
-        vkUpdateDescriptorSets(device, 2, cw.data(), 0, nullptr);
+            VkDescriptorBufferInfo compCamera{cameraBuffers[i], 0, sizeof(CameraData)};
+            std::array<VkWriteDescriptorSet, 5> cw{};
+            cw[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, compositeSets[i], 0, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, nullptr, nullptr};
+            cw[0].pImageInfo = &compScene;
+            cw[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, compositeSets[i], 1, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, nullptr, nullptr};
+            cw[1].pImageInfo = &compSSR;
+            cw[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, compositeSets[i], 2, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, nullptr, nullptr};
+            cw[2].pImageInfo = &compDepth;
+            cw[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, compositeSets[i], 3, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, nullptr, nullptr};
+            cw[3].pImageInfo = &compNormal;
+            cw[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, compositeSets[i], 4, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, nullptr, nullptr};
+            cw[4].pBufferInfo = &compCamera;
+            vkUpdateDescriptorSets(device, static_cast<uint32_t>(cw.size()), cw.data(), 0, nullptr);
+        }
     }
 
     void createCommandBuffers()
@@ -1538,9 +1595,12 @@ private:
         VkRect2D csc{{0, 0}, swapchainExtent};
         vkCmdSetViewport(cmd, 0, 1, &cvp);
         vkCmdSetScissor(cmd, 0, 1, &csc);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, compositePipelineLayout, 0, 1, &compositeSet, 0, nullptr);
-        const uint32_t ssrMode = ssrEnabled ? 1u : 0u;
-        vkCmdPushConstants(cmd, compositePipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(ssrMode), &ssrMode);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, compositePipelineLayout, 0, 1, &compositeSets[frameIndex], 0, nullptr);
+        const CompositeOptions options{
+            ssrEnabled ? 1u : 0u,
+            bufferViewMode,
+            comparisonEnabled ? 1u : 0u};
+        vkCmdPushConstants(cmd, compositePipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(options), &options);
         vkCmdDraw(cmd, 3, 1, 0, 0);
         vkCmdEndRenderPass(cmd);
 
