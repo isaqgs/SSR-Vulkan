@@ -17,16 +17,5 @@ void main() {
         finalColor += texture(SSRResult, fragUV).rgb;
     }
 
-    bool insideButton = fragUV.x >= 0.02 && fragUV.x <= 0.22 &&
-                        fragUV.y >= 0.02 && fragUV.y <= 0.09;
-    if (insideButton) {
-        bool buttonBorder = fragUV.x < 0.023 || fragUV.x > 0.217 ||
-                            fragUV.y < 0.025 || fragUV.y > 0.085;
-        vec3 buttonColor = options.ssrEnabled != 0
-                               ? vec3(0.12, 0.55, 0.24)
-                               : vec3(0.65, 0.16, 0.14);
-        finalColor = buttonBorder ? vec3(0.9) : buttonColor;
-    }
-
     outColor = vec4(finalColor, 1.0);
 }

@@ -166,13 +166,15 @@ private:
     bool framebufferResized = false;
     bool ssrEnabled = true;
     bool ssrDebugMode = false;
-    bool cameraDragging = false;
+    bool cameraLooking = false;
+    bool firstMouseMovement = true;
     double lastCursorX = 0.0;
     double lastCursorY = 0.0;
-    glm::vec3 cameraTarget{0.0f, -0.55f, -2.5f};
+    glm::vec3 playerPosition{0.0f, -0.35f, 2.15f};
     float cameraYaw = 0.0f;
-    float cameraPitch = 0.38f;
-    float cameraDistance = 10.0f;
+    float cameraPitch = 0.0f;
+    static constexpr float playerRadius = 0.22f;
+    static constexpr float moveSpeed = 3.0f;
 
     const std::vector<const char *> validationLayers = {"VK_LAYER_KHRONOS_validation"};
 
@@ -201,42 +203,31 @@ private:
                                    app->toggleSSRDebug(); });
         glfwSetMouseButtonCallback(window, [](GLFWwindow *w, int button, int action, int)
                                    {
+                                       if (button != GLFW_MOUSE_BUTTON_RIGHT)
+                                           return;
                                        VulkanSSRApp *app = static_cast<VulkanSSRApp *>(glfwGetWindowUserPointer(w));
-                                       if (button == GLFW_MOUSE_BUTTON_RIGHT)
-                                       {
-                                           app->cameraDragging = action == GLFW_PRESS;
-                                           glfwGetCursorPos(w, &app->lastCursorX, &app->lastCursorY);
-                                       }
-                                       if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS)
-                                       {
-                                           double x = 0.0, y = 0.0;
-                                           int width = 0, height = 0;
-                                           glfwGetCursorPos(w, &x, &y);
-                                           glfwGetWindowSize(w, &width, &height);
-                                           if (width > 0 && height > 0 &&
-                                               x >= width * 0.02 && x <= width * 0.22 &&
-                                               y >= height * 0.02 && y <= height * 0.09)
-                                               app->toggleSSR();
-                                       } });
+                                       app->cameraLooking = action == GLFW_PRESS;
+                                       app->firstMouseMovement = true;
+                                       glfwSetInputMode(w, GLFW_CURSOR, app->cameraLooking ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL); });
         glfwSetCursorPosCallback(window, [](GLFWwindow *w, double x, double y)
                                  {
                                      VulkanSSRApp *app = static_cast<VulkanSSRApp *>(glfwGetWindowUserPointer(w));
-                                     if (!app->cameraDragging)
+                                     if (!app->cameraLooking)
                                          return;
-                                     app->cameraYaw -= static_cast<float>(x - app->lastCursorX) * 0.005f;
+                                     if (app->firstMouseMovement)
+                                     {
+                                         app->lastCursorX = x;
+                                         app->lastCursorY = y;
+                                         app->firstMouseMovement = false;
+                                         return;
+                                     }
+                                     app->cameraYaw += static_cast<float>(x - app->lastCursorX) * 0.003f;
                                      app->cameraPitch = std::clamp(
-                                         app->cameraPitch + static_cast<float>(y - app->lastCursorY) * 0.005f,
-                                         -0.15f, 1.35f);
+                                         app->cameraPitch - static_cast<float>(y - app->lastCursorY) * 0.003f,
+                                         -1.2f, 1.2f);
                                      app->lastCursorX = x;
                                      app->lastCursorY = y;
                                  });
-        glfwSetScrollCallback(window, [](GLFWwindow *w, double, double yoffset)
-                              {
-                                  VulkanSSRApp *app = static_cast<VulkanSSRApp *>(glfwGetWindowUserPointer(w));
-                                  app->cameraDistance = std::clamp(
-                                      app->cameraDistance * std::exp(static_cast<float>(-yoffset) * 0.12f),
-                                      3.2f, 18.0f);
-                              });
         glfwSetFramebufferSizeCallback(window, [](GLFWwindow *w, int, int)
                                        { static_cast<VulkanSSRApp *>(glfwGetWindowUserPointer(w))->framebufferResized = true; });
         updateWindowTitle();
@@ -245,8 +236,8 @@ private:
     void updateWindowTitle() const
     {
         glfwSetWindowTitle(window, ssrEnabled
-                                       ? "SSR Vulkan | ON | F1 SSR | F2 debug | botao direito: orbitar | scroll: zoom"
-                                       : "SSR Vulkan | OFF | F1 SSR | F2 debug | botao direito: orbitar | scroll: zoom");
+                                       ? "SSR Vulkan | ON | WASD mover | segure botao direito: olhar | F1 SSR | F2 debug"
+                                       : "SSR Vulkan | OFF | WASD mover | segure botao direito: olhar | F1 SSR | F2 debug");
     }
 
     void toggleSSR()
@@ -258,6 +249,60 @@ private:
     void toggleSSRDebug()
     {
         ssrDebugMode = !ssrDebugMode;
+    }
+
+    bool collidesWithWorld(const glm::vec2 &position) const
+    {
+        if (position.x < -5.0f + playerRadius || position.x > 5.0f - playerRadius ||
+            position.y < -12.0f + playerRadius || position.y > 3.0f - playerRadius)
+            return true;
+
+        auto overlapsBox = [&](const glm::vec2 &center, const glm::vec2 &halfSize)
+        {
+            const glm::vec2 nearest = glm::clamp(position, center - halfSize, center + halfSize);
+            const glm::vec2 difference = position - nearest;
+            return glm::dot(difference, difference) < playerRadius * playerRadius;
+        };
+        auto overlapsSphere = [&](const glm::vec2 &center, float radius)
+        {
+            const glm::vec2 difference = position - center;
+            const float combinedRadius = playerRadius + radius;
+            return glm::dot(difference, difference) < combinedRadius * combinedRadius;
+        };
+
+        return overlapsBox({-1.35f, -2.1f}, {0.65f, 0.65f}) ||
+               overlapsBox({1.2f, -3.45f}, {0.4f, 0.4f}) ||
+               overlapsBox({2.65f, -2.2f}, {0.45f, 0.45f}) ||
+               overlapsSphere({0.0f, -4.8f}, 0.58f) ||
+               overlapsSphere({-2.65f, -3.1f}, 0.36f);
+    }
+
+    void updatePlayerMovement(float deltaTime)
+    {
+        glm::vec2 forward{std::sin(cameraYaw), -std::cos(cameraYaw)};
+        glm::vec2 right{std::cos(cameraYaw), std::sin(cameraYaw)};
+        glm::vec2 movement{0.0f};
+        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
+            movement += forward;
+        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
+            movement -= forward;
+        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
+            movement += right;
+        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
+            movement -= right;
+
+        const float movementLength = glm::length(movement);
+        if (movementLength == 0.0f)
+            return;
+        movement = movement / movementLength * (moveSpeed * deltaTime);
+
+        const glm::vec2 current{playerPosition.x, playerPosition.z};
+        const glm::vec2 xCandidate{current.x + movement.x, current.y};
+        if (!collidesWithWorld(xCandidate))
+            playerPosition.x = xCandidate.x;
+        const glm::vec2 zCandidate{playerPosition.x, current.y + movement.y};
+        if (!collidesWithWorld(zCandidate))
+            playerPosition.z = zCandidate.y;
     }
 
     void initVulkan()
@@ -1127,12 +1172,11 @@ private:
     {
         CameraData camera{};
         camera.model = glm::mat4(1.0f);
-        const float horizontalDistance = cameraDistance * std::cos(cameraPitch);
-        const glm::vec3 cameraPosition = cameraTarget + glm::vec3(
-            std::sin(cameraYaw) * horizontalDistance,
-            std::sin(cameraPitch) * cameraDistance,
-            std::cos(cameraYaw) * horizontalDistance);
-        camera.view = glm::lookAt(cameraPosition, cameraTarget, glm::vec3(0, 1, 0));
+        const glm::vec3 lookDirection{
+            std::sin(cameraYaw) * std::cos(cameraPitch),
+            std::sin(cameraPitch),
+            -std::cos(cameraYaw) * std::cos(cameraPitch)};
+        camera.view = glm::lookAt(playerPosition, playerPosition + lookDirection, glm::vec3(0, 1, 0));
         camera.projection = glm::perspective(glm::radians(48.0f), float(swapchainExtent.width) / float(swapchainExtent.height), 0.1f, 50.0f);
         camera.projection[1][1] *= -1.0f;
         camera.inverseProjection = glm::inverse(camera.projection);
@@ -1382,9 +1426,14 @@ private:
 
     void mainLoop()
     {
+        double previousTime = glfwGetTime();
         while (!glfwWindowShouldClose(window))
         {
             glfwPollEvents();
+            const double currentTime = glfwGetTime();
+            const float deltaTime = std::clamp(static_cast<float>(currentTime - previousTime), 0.0f, 0.05f);
+            previousTime = currentTime;
+            updatePlayerMovement(deltaTime);
             drawFrame();
         }
         vkDeviceWaitIdle(device);
