@@ -13,6 +13,8 @@ O programa apresenta uma cena iluminada com chão quadriculado, três cubos e du
 
 A câmera se mantém na altura aproximada do meio do cubo vermelho. O movimento é no plano do chão, sem pulo ou gravidade.
 
+Ao caminhar contra um objeto, é possível empurrá-lo: com o baixo atrito do chão, os cubos deslizam como no gelo e as esferas rolam com rotação visualmente enfatizada. A simulação usa colisores simples adequados à cena; não é uma simulação de corpos rígidos completa.
+
 ## Tecnologias
 
 - C++17

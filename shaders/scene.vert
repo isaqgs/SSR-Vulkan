@@ -8,6 +8,10 @@ layout(location = 0) out vec3 fragNormal;
 layout(location = 1) out vec3 fragColor;
 layout(location = 2) out vec3 fragWorldPosition;
 
+layout(push_constant) uniform ObjectTransform {
+    mat4 model;
+} objectTransform;
+
 layout(set = 0, binding = 0) uniform CameraUBO {
     mat4 model;
     mat4 view;
@@ -17,10 +21,10 @@ layout(set = 0, binding = 0) uniform CameraUBO {
 } camera;
 
 void main() {
-    vec4 world = camera.model * vec4(inPosition, 1.0);
+    vec4 world = objectTransform.model * vec4(inPosition, 1.0);
     vec4 viewPosition = camera.view * world;
     gl_Position = camera.projection * viewPosition;
-    fragNormal = mat3(camera.view * camera.model) * inNormal;
+    fragNormal = mat3(camera.view * objectTransform.model) * inNormal;
     fragColor = inColor;
     fragWorldPosition = world.xyz;
 }

@@ -2,6 +2,7 @@
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <array>
 #include <cstddef>
 #include <vector>
@@ -54,6 +55,25 @@ struct SSRData
 };
 
 static_assert(sizeof(SSRData) == 32);
+
+enum class ObjectShape
+{
+    Box,
+    Sphere
+};
+
+struct SceneObject
+{
+    ObjectShape shape = ObjectShape::Box;
+    uint32_t firstVertex = 0;
+    uint32_t vertexCount = 0;
+    glm::vec3 pivot{0.0f};
+    glm::vec3 halfSize{0.0f};
+    float radius = 0.0f;
+    glm::vec2 offset{0.0f};
+    glm::vec2 velocity{0.0f};
+    glm::quat orientation{1.0f, 0.0f, 0.0f, 0.0f};
+};
 
 struct QueueFamilyIndices
 {
@@ -132,7 +152,8 @@ private:
 
     VkBuffer vertexBuffer = VK_NULL_HANDLE;
     VkDeviceMemory vertexMemory = VK_NULL_HANDLE;
-    uint32_t vertexCount = 0;
+    uint32_t floorVertexCount = 0;
+    std::vector<SceneObject> sceneObjects;
     std::array<VkBuffer, MAX_FRAMES_IN_FLIGHT> cameraBuffers{};
     std::array<VkDeviceMemory, MAX_FRAMES_IN_FLIGHT> cameraMemories{};
     std::array<VkBuffer, MAX_FRAMES_IN_FLIGHT> ssrBuffers{};
@@ -178,6 +199,10 @@ private:
     float displayedFrameTimeMs = 0.0f;
     static constexpr float playerRadius = 0.22f;
     static constexpr float moveSpeed = 3.0f;
+    static constexpr float pushAcceleration = 9.0f;
+    static constexpr float maxObjectSpeed = 4.5f;
+    static constexpr float objectFriction = 0.55f;
+    static constexpr float sphereRollMultiplier = 1.8f;
 
     const std::vector<const char *> validationLayers = {"VK_LAYER_KHRONOS_validation"};
 
@@ -265,30 +290,122 @@ private:
         ssrDebugMode = !ssrDebugMode;
     }
 
-    bool collidesWithWorld(const glm::vec2 &position) const
+    glm::vec2 objectCenter(const SceneObject &object, const glm::vec2 &offset) const
     {
-        if (position.x < -5.0f + playerRadius || position.x > 5.0f - playerRadius ||
-            position.y < -12.0f + playerRadius || position.y > 3.0f - playerRadius)
-            return true;
+        return {object.pivot.x + offset.x, object.pivot.z + offset.y};
+    }
 
-        auto overlapsBox = [&](const glm::vec2 &center, const glm::vec2 &halfSize)
-        {
-            const glm::vec2 nearest = glm::clamp(position, center - halfSize, center + halfSize);
-            const glm::vec2 difference = position - nearest;
-            return glm::dot(difference, difference) < playerRadius * playerRadius;
-        };
-        auto overlapsSphere = [&](const glm::vec2 &center, float radius)
+    bool overlapsObject(const glm::vec2 &position, float radius, const SceneObject &object, const glm::vec2 &offset) const
+    {
+        const glm::vec2 center = objectCenter(object, offset);
+        if (object.shape == ObjectShape::Sphere)
         {
             const glm::vec2 difference = position - center;
-            const float combinedRadius = playerRadius + radius;
+            const float combinedRadius = radius + object.radius;
             return glm::dot(difference, difference) < combinedRadius * combinedRadius;
-        };
+        }
 
-        return overlapsBox({-1.35f, -2.1f}, {0.65f, 0.65f}) ||
-               overlapsBox({1.2f, -3.45f}, {0.4f, 0.4f}) ||
-               overlapsBox({2.65f, -2.2f}, {0.45f, 0.45f}) ||
-               overlapsSphere({0.0f, -4.8f}, 0.58f) ||
-               overlapsSphere({-2.65f, -3.1f}, 0.36f);
+        const glm::vec2 halfSize{object.halfSize.x, object.halfSize.z};
+        const glm::vec2 nearest = glm::clamp(position, center - halfSize, center + halfSize);
+        const glm::vec2 difference = position - nearest;
+        return glm::dot(difference, difference) < radius * radius;
+    }
+
+    bool objectsOverlap(const SceneObject &a, const glm::vec2 &offsetA,
+                        const SceneObject &b, const glm::vec2 &offsetB) const
+    {
+        const glm::vec2 centerA = objectCenter(a, offsetA);
+        const glm::vec2 centerB = objectCenter(b, offsetB);
+        if (a.shape == ObjectShape::Box && b.shape == ObjectShape::Box)
+        {
+            return std::abs(centerA.x - centerB.x) < a.halfSize.x + b.halfSize.x &&
+                   std::abs(centerA.y - centerB.y) < a.halfSize.z + b.halfSize.z;
+        }
+        if (a.shape == ObjectShape::Sphere)
+            return overlapsObject(centerA, a.radius, b, offsetB);
+        return overlapsObject(centerB, b.radius, a, offsetA);
+    }
+
+    bool insideArena(const glm::vec2 &position, const glm::vec2 &halfSize) const
+    {
+        return position.x - halfSize.x >= -5.0f && position.x + halfSize.x <= 5.0f &&
+               position.y - halfSize.y >= -12.0f && position.y + halfSize.y <= 3.0f;
+    }
+
+    bool playerCanMoveTo(const glm::vec2 &position, const glm::vec2 &pushDirection, float deltaTime)
+    {
+        if (!insideArena(position, glm::vec2(playerRadius)))
+            return false;
+
+        for (auto &object : sceneObjects)
+        {
+            if (!overlapsObject(position, playerRadius, object, object.offset))
+                continue;
+
+            object.velocity += pushDirection * (pushAcceleration * deltaTime);
+            const float speed = glm::length(object.velocity);
+            if (speed > maxObjectSpeed)
+                object.velocity *= maxObjectSpeed / speed;
+            return false;
+        }
+        return true;
+    }
+
+    bool objectOverlapsOthers(size_t objectIndex, const glm::vec2 &candidateOffset) const
+    {
+        const SceneObject &object = sceneObjects[objectIndex];
+        for (size_t otherIndex = 0; otherIndex < sceneObjects.size(); ++otherIndex)
+        {
+            if (otherIndex == objectIndex)
+                continue;
+            const SceneObject &other = sceneObjects[otherIndex];
+            if (objectsOverlap(object, candidateOffset, other, other.offset))
+                return true;
+        }
+        return false;
+    }
+
+    void updateObjects(float deltaTime)
+    {
+        const glm::vec2 playerXZ{playerPosition.x, playerPosition.z};
+        for (size_t i = 0; i < sceneObjects.size(); ++i)
+        {
+            SceneObject &object = sceneObjects[i];
+            object.velocity *= std::exp(-objectFriction * deltaTime);
+            if (glm::length(object.velocity) < 0.015f)
+            {
+                object.velocity = glm::vec2(0.0f);
+                continue;
+            }
+
+            const glm::vec2 oldOffset = object.offset;
+            const glm::vec2 objectHalfSize = object.shape == ObjectShape::Sphere
+                                                 ? glm::vec2(object.radius)
+                                                 : glm::vec2(object.halfSize.x, object.halfSize.z);
+            for (int axis = 0; axis < 2; ++axis)
+            {
+                glm::vec2 candidateOffset = object.offset;
+                candidateOffset[axis] += object.velocity[axis] * deltaTime;
+                const glm::vec2 candidateCenter = objectCenter(object, candidateOffset);
+                if (!insideArena(candidateCenter, objectHalfSize) ||
+                    overlapsObject(playerXZ, playerRadius, object, candidateOffset) ||
+                    objectOverlapsOthers(i, candidateOffset))
+                {
+                    object.velocity[axis] = 0.0f;
+                    continue;
+                }
+                object.offset = candidateOffset;
+            }
+
+            const glm::vec2 displacement = object.offset - oldOffset;
+            const float distance = glm::length(displacement);
+            if (object.shape == ObjectShape::Sphere && distance > 0.00001f)
+            {
+                const glm::vec3 rollAxis{displacement.y, 0.0f, -displacement.x};
+                const glm::quat roll = glm::angleAxis(sphereRollMultiplier * distance / object.radius, glm::normalize(rollAxis));
+                object.orientation = glm::normalize(roll * object.orientation);
+            }
+        }
     }
 
     void updatePlayerMovement(float deltaTime)
@@ -308,14 +425,17 @@ private:
         const float movementLength = glm::length(movement);
         if (movementLength == 0.0f)
             return;
-        movement = movement / movementLength * (moveSpeed * deltaTime);
+        const glm::vec2 pushDirection = movement / movementLength;
+        movement = pushDirection * (moveSpeed * deltaTime);
 
         const glm::vec2 current{playerPosition.x, playerPosition.z};
         const glm::vec2 xCandidate{current.x + movement.x, current.y};
-        if (!collidesWithWorld(xCandidate))
+        if (movement.x != 0.0f &&
+            playerCanMoveTo(xCandidate, {pushDirection.x < 0.0f ? -1.0f : 1.0f, 0.0f}, deltaTime))
             playerPosition.x = xCandidate.x;
         const glm::vec2 zCandidate{playerPosition.x, current.y + movement.y};
-        if (!collidesWithWorld(zCandidate))
+        if (movement.y != 0.0f &&
+            playerCanMoveTo(zCandidate, {0.0f, pushDirection.y < 0.0f ? -1.0f : 1.0f}, deltaTime))
             playerPosition.z = zCandidate.y;
     }
 
@@ -903,6 +1023,11 @@ private:
         VkPipelineLayoutCreateInfo sl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         sl.setLayoutCount = 1;
         sl.pSetLayouts = &sceneSetLayout;
+        VkPushConstantRange objectTransformRange{};
+        objectTransformRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        objectTransformRange.size = sizeof(glm::mat4);
+        sl.pushConstantRangeCount = 1;
+        sl.pPushConstantRanges = &objectTransformRange;
         vkCreatePipelineLayout(device, &sl, nullptr, &scenePipelineLayout);
         VkPipelineLayoutCreateInfo ql{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         ql.setLayoutCount = 1;
@@ -1111,6 +1236,7 @@ private:
         const float floorY = -1.0f;
         addQuad({-5.0f, floorY, 3.0f}, {5.0f, floorY, 3.0f}, {5.0f, floorY, -12.0f}, {-5.0f, floorY, -12.0f},
                 {0.0f, 1.0f, 0.0f}, {0.22f, 0.25f, 0.31f});
+        floorVertexCount = static_cast<uint32_t>(vertices.size());
 
         auto addBox = [&](const glm::vec3 &center, const glm::vec3 &halfSize, const glm::vec3 &color)
         {
@@ -1125,12 +1251,29 @@ private:
             addQuad({x1, y0, z0}, {x0, y0, z0}, {x0, y1, z0}, {x1, y1, z0}, {0, 0, -1}, color * 0.65f);
         };
 
-        addBox({-1.35f, -0.35f, -2.1f}, {0.65f, 0.65f, 0.65f}, {0.95f, 0.12f, 0.055f});
-        addBox({1.2f, -0.6f, -3.45f}, {0.4f, 0.4f, 0.4f}, {0.05f, 0.55f, 0.95f});
+        auto addObjectBox = [&](const glm::vec3 &center, const glm::vec3 &halfSize, const glm::vec3 &color)
+        {
+            SceneObject object{};
+            object.shape = ObjectShape::Box;
+            object.firstVertex = static_cast<uint32_t>(vertices.size());
+            object.pivot = center;
+            object.halfSize = halfSize;
+            addBox(center, halfSize, color);
+            object.vertexCount = static_cast<uint32_t>(vertices.size()) - object.firstVertex;
+            sceneObjects.push_back(object);
+        };
+
+        addObjectBox({-1.35f, -0.35f, -2.1f}, {0.65f, 0.65f, 0.65f}, {0.95f, 0.12f, 0.055f});
+        addObjectBox({1.2f, -0.6f, -3.45f}, {0.4f, 0.4f, 0.4f}, {0.05f, 0.55f, 0.95f});
 
         constexpr float pi = 3.14159265358979323846f;
         auto addSphere = [&](const glm::vec3 &sphereCenter, float sphereRadius, const glm::vec3 &sphereColor)
         {
+            SceneObject object{};
+            object.shape = ObjectShape::Sphere;
+            object.firstVertex = static_cast<uint32_t>(vertices.size());
+            object.pivot = sphereCenter;
+            object.radius = sphereRadius;
             constexpr int sphereRings = 32;
             constexpr int sphereSegments = 64;
             auto sphereNormal = [&](int ring, int segment)
@@ -1159,12 +1302,13 @@ private:
                         addSphereTriangle(b, c, d);
                 }
             }
+            object.vertexCount = static_cast<uint32_t>(vertices.size()) - object.firstVertex;
+            sceneObjects.push_back(object);
         };
-        addBox({2.65f, -0.55f, -2.2f}, {0.45f, 0.45f, 0.45f}, {0.48f, 0.16f, 0.82f});
+        addObjectBox({2.65f, -0.55f, -2.2f}, {0.45f, 0.45f, 0.45f}, {0.48f, 0.16f, 0.82f});
         addSphere({0.0f, -0.42f, -4.8f}, 0.58f, {0.95f, 0.62f, 0.04f});
         addSphere({-2.65f, -0.64f, -3.1f}, 0.36f, {0.08f, 0.78f, 0.48f});
 
-        vertexCount = static_cast<uint32_t>(vertices.size());
         createBuffer(sizeof(Vertex) * vertices.size(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, vertexBuffer, vertexMemory);
         void *data;
         vkMapMemory(device, vertexMemory, 0, VK_WHOLE_SIZE, 0, &data);
@@ -1348,7 +1492,18 @@ private:
         VkDeviceSize offset = 0;
         vkCmdBindVertexBuffers(cmd, 0, 1, &vertexBuffer, &offset);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, scenePipelineLayout, 0, 1, &sceneSets[frameIndex], 0, nullptr);
-        vkCmdDraw(cmd, vertexCount, 1, 0, 0);
+        glm::mat4 floorTransform(1.0f);
+        vkCmdPushConstants(cmd, scenePipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(floorTransform), &floorTransform);
+        vkCmdDraw(cmd, floorVertexCount, 1, 0, 0);
+        for (const SceneObject &object : sceneObjects)
+        {
+            const glm::vec3 translatedPivot = object.pivot + glm::vec3(object.offset.x, 0.0f, object.offset.y);
+            const glm::mat4 model = glm::translate(glm::mat4(1.0f), translatedPivot) *
+                                    glm::mat4_cast(object.orientation) *
+                                    glm::translate(glm::mat4(1.0f), -object.pivot);
+            vkCmdPushConstants(cmd, scenePipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(model), &model);
+            vkCmdDraw(cmd, object.vertexCount, 1, object.firstVertex, 0);
+        }
         vkCmdEndRenderPass(cmd);
 
         std::array<VkClearValue, 1> ssrClear{};
@@ -1450,6 +1605,7 @@ private:
             const float deltaTime = std::clamp(static_cast<float>(currentTime - previousTime), 0.0f, 0.05f);
             previousTime = currentTime;
             updatePlayerMovement(deltaTime);
+            updateObjects(deltaTime);
             drawFrame();
             ++framesInWindow;
 
