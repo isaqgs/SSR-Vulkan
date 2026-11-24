@@ -34,7 +34,7 @@ vec3 reconstructViewPosition(vec2 uv, float depth) {
 
 vec2 projectToUV(vec3 viewPosition) {
     vec4 clipPosition = camera.projection * vec4(viewPosition, 1.0);
-    if (abs(clipPosition.w) < 0.000001)
+    if (clipPosition.w <= 0.000001)
         return vec2(-1.0);
     vec3 ndc = clipPosition.xyz / clipPosition.w;
     return ndc.xy * 0.5 + 0.5;
@@ -79,19 +79,18 @@ void main() {
         return;
     }
 
-    float worldStep = max(params.stride, 0.0001);
-
     bool hit = false;
     vec2 hitUV = vec2(0.0);
     float hitDistance = 0.0;
+    float previousDistance = 0.0;
     float previousDifference = 0.0;
     bool hasPreviousDifference = false;
+    float hitConfidence = 1.0;
 
     int stepCount = clamp(params.maxSteps, 1, 256);
+    float stepLength = max(params.stride, params.maxDistance / float(stepCount));
     for (int i = 1; i <= stepCount; ++i) {
-        hitDistance = worldStep * float(i);
-        if (hitDistance > params.maxDistance)
-            break;
+        hitDistance = min(stepLength * float(i), params.maxDistance);
 
         vec3 rayPosition = rayOrigin + reflectionDirection * hitDistance;
         vec2 sampleUV = projectToUV(rayPosition);
@@ -99,21 +98,20 @@ void main() {
             break;
 
         float sceneDepth = texture(SceneDepth, sampleUV).r;
-        if (sceneDepth <= 0.0 || sceneDepth >= 1.0)
+        if (sceneDepth <= 0.0 || sceneDepth >= 1.0) {
+            hasPreviousDifference = false;
             continue;
+        }
 
         vec3 scenePosition = reconstructViewPosition(sampleUV, sceneDepth);
         float depthDifference = rayPosition.z - scenePosition.z;
+        bool crossedSurface = hasPreviousDifference && previousDifference > 0.0 && depthDifference <= 0.0;
 
-        bool crossedSurface = hasPreviousDifference &&
-                              previousDifference * depthDifference <= 0.0;
-        bool withinThickness = abs(depthDifference) <= params.thickness;
-
-        if (crossedSurface && withinThickness && hitDistance >= 0.05) {
-            float loDistance = hitDistance - worldStep;
+        if (crossedSurface && hitDistance >= 0.05) {
+            float loDistance = previousDistance;
             float hiDistance = hitDistance;
 
-            for (int refine = 0; refine < 6; ++refine) {
+            for (int refine = 0; refine < 8; ++refine) {
                 float midDistance = (loDistance + hiDistance) * 0.5;
                 vec3 midRayPosition = rayOrigin + reflectionDirection * midDistance;
                 vec2 midUV = projectToUV(midRayPosition);
@@ -132,19 +130,28 @@ void main() {
                 vec3 midScenePosition = reconstructViewPosition(midUV, midSceneDepth);
                 float midDifference = midRayPosition.z - midScenePosition.z;
 
-                if (midDifference >= -params.thickness && midDifference <= params.thickness)
-                    hiDistance = midDistance;
-                else
+                if (midDifference > 0.0)
                     loDistance = midDistance;
+                else
+                    hiDistance = midDistance;
             }
 
-            hitDistance = (loDistance + hiDistance) * 0.5;
+            hitDistance = hiDistance;
             vec3 hitPosition = rayOrigin + reflectionDirection * hitDistance;
             hitUV = projectToUV(hitPosition);
-            hit = insideScreen(hitUV);
+            float refinedDepth = texture(SceneDepth, hitUV).r;
+            if (refinedDepth > 0.0 && refinedDepth < 1.0) {
+                vec3 refinedScenePosition = reconstructViewPosition(hitUV, refinedDepth);
+                float refinedRayZ = hitPosition.z;
+                float tolerance = params.thickness + abs(refinedScenePosition.z) * 0.004;
+                float difference = abs(refinedRayZ - refinedScenePosition.z);
+                hitConfidence = 1.0 - smoothstep(tolerance * 0.5, tolerance * 2.0, difference);
+                hit = insideScreen(hitUV) && difference <= tolerance * 2.0;
+            }
             break;
         }
 
+        previousDistance = hitDistance;
         previousDifference = depthDifference;
         hasPreviousDifference = true;
     }
@@ -155,17 +162,18 @@ void main() {
     }
 
     if (params.debugMode != 0) {
-        outColor = vec4(1.0, 0.0, 0.0, 1.0);
+        float distanceHeat = clamp(hitDistance / params.maxDistance, 0.0, 1.0);
+        outColor = vec4(mix(vec3(0.05, 0.85, 0.35), vec3(1.0, 0.12, 0.04), distanceHeat), 1.0);
         return;
     }
 
     vec3 reflectedColor = texture(SceneColor, hitUV).rgb;
-    float distanceFactor = 1.0 - clamp(hitDistance / params.maxDistance, 0.0, 1.0);
+    float distanceFactor = 1.0 - smoothstep(params.maxDistance * 0.12, params.maxDistance, hitDistance);
     float edgeFactor = smoothstep(0.0, 0.08, hitUV.x) * smoothstep(0.0, 0.08, 1.0 - hitUV.x);
     edgeFactor *= smoothstep(0.0, 0.08, hitUV.y) * smoothstep(0.0, 0.08, 1.0 - hitUV.y);
     float viewFactor = clamp(dot(normal, viewDirection), 0.0, 1.0);
-    float fresnelFactor = pow(1.0 - viewFactor, 2.0);
-    float reflectionFactor = clamp(params.intensity * distanceFactor * edgeFactor * fresnelFactor, 0.0, 1.0);
+    float fresnelFactor = 0.12 + 0.88 * pow(1.0 - viewFactor, 4.0);
+    float reflectionFactor = clamp(params.intensity * distanceFactor * edgeFactor * fresnelFactor * hitConfidence, 0.0, 1.0);
 
     outColor = vec4(reflectedColor * reflectionFactor, reflectionFactor);
 }

@@ -13,6 +13,7 @@
 #include <cstring>
 #include <algorithm>
 #include <cstdlib>
+#include <cmath>
 
 static constexpr uint32_t WIDTH = 1280;
 static constexpr uint32_t HEIGHT = 720;
@@ -42,13 +43,16 @@ static_assert(offsetof(CameraData, inverseView) == 4 * sizeof(glm::mat4));
 
 struct SSRData
 {
-    int maxSteps = 96;
-    float maxDistance = 8.0f;
-    float stride = 0.012f;
-    float thickness = 0.12f;
-    float intensity = 1.5f;
+    int maxSteps = 144;
+    float maxDistance = 12.0f;
+    float stride = 0.025f;
+    float thickness = 0.16f;
+    float intensity = 2.0f;
     int debugMode = 0;
+    int padding[2]{};
 };
+
+static_assert(sizeof(SSRData) == 32);
 
 struct QueueFamilyIndices
 {
@@ -118,8 +122,8 @@ private:
     VkDescriptorSetLayout ssrSetLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout compositeSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
-    VkDescriptorSet sceneSet = VK_NULL_HANDLE;
-    VkDescriptorSet ssrSet = VK_NULL_HANDLE;
+    std::array<VkDescriptorSet, MAX_FRAMES_IN_FLIGHT> sceneSets{};
+    std::array<VkDescriptorSet, MAX_FRAMES_IN_FLIGHT> ssrSets{};
     VkDescriptorSet compositeSet = VK_NULL_HANDLE;
 
     VkCommandPool commandPool = VK_NULL_HANDLE;
@@ -128,10 +132,10 @@ private:
     VkBuffer vertexBuffer = VK_NULL_HANDLE;
     VkDeviceMemory vertexMemory = VK_NULL_HANDLE;
     uint32_t vertexCount = 0;
-    VkBuffer cameraBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory cameraMemory = VK_NULL_HANDLE;
-    VkBuffer ssrBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory ssrMemory = VK_NULL_HANDLE;
+    std::array<VkBuffer, MAX_FRAMES_IN_FLIGHT> cameraBuffers{};
+    std::array<VkDeviceMemory, MAX_FRAMES_IN_FLIGHT> cameraMemories{};
+    std::array<VkBuffer, MAX_FRAMES_IN_FLIGHT> ssrBuffers{};
+    std::array<VkDeviceMemory, MAX_FRAMES_IN_FLIGHT> ssrMemories{};
 
     VkImage sceneColor = VK_NULL_HANDLE;
     VkDeviceMemory sceneColorMemory = VK_NULL_HANDLE;
@@ -147,6 +151,7 @@ private:
     VkImageView ssrResultView = VK_NULL_HANDLE;
 
     VkSampler sampler = VK_NULL_HANDLE;
+    VkSampler nearestSampler = VK_NULL_HANDLE;
     VkFramebuffer sceneFramebuffer = VK_NULL_HANDLE;
     VkFramebuffer ssrFramebuffer = VK_NULL_HANDLE;
     std::vector<VkFramebuffer> compositeFramebuffers;
@@ -161,6 +166,13 @@ private:
     bool framebufferResized = false;
     bool ssrEnabled = true;
     bool ssrDebugMode = false;
+    bool cameraDragging = false;
+    double lastCursorX = 0.0;
+    double lastCursorY = 0.0;
+    glm::vec3 cameraTarget{0.0f, -0.55f, -2.5f};
+    float cameraYaw = 0.0f;
+    float cameraPitch = 0.38f;
+    float cameraDistance = 10.0f;
 
     const std::vector<const char *> validationLayers = {"VK_LAYER_KHRONOS_validation"};
 
@@ -189,16 +201,42 @@ private:
                                    app->toggleSSRDebug(); });
         glfwSetMouseButtonCallback(window, [](GLFWwindow *w, int button, int action, int)
                                    {
-                                       if (button != GLFW_MOUSE_BUTTON_LEFT || action != GLFW_PRESS)
-                                           return;
-                                       double x = 0.0, y = 0.0;
-                                       int width = 0, height = 0;
-                                       glfwGetCursorPos(w, &x, &y);
-                                       glfwGetWindowSize(w, &width, &height);
-                                       if (width > 0 && height > 0 &&
-                                           x >= width * 0.02 && x <= width * 0.22 &&
-                                           y >= height * 0.02 && y <= height * 0.09)
-                                           static_cast<VulkanSSRApp *>(glfwGetWindowUserPointer(w))->toggleSSR(); });
+                                       VulkanSSRApp *app = static_cast<VulkanSSRApp *>(glfwGetWindowUserPointer(w));
+                                       if (button == GLFW_MOUSE_BUTTON_RIGHT)
+                                       {
+                                           app->cameraDragging = action == GLFW_PRESS;
+                                           glfwGetCursorPos(w, &app->lastCursorX, &app->lastCursorY);
+                                       }
+                                       if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS)
+                                       {
+                                           double x = 0.0, y = 0.0;
+                                           int width = 0, height = 0;
+                                           glfwGetCursorPos(w, &x, &y);
+                                           glfwGetWindowSize(w, &width, &height);
+                                           if (width > 0 && height > 0 &&
+                                               x >= width * 0.02 && x <= width * 0.22 &&
+                                               y >= height * 0.02 && y <= height * 0.09)
+                                               app->toggleSSR();
+                                       } });
+        glfwSetCursorPosCallback(window, [](GLFWwindow *w, double x, double y)
+                                 {
+                                     VulkanSSRApp *app = static_cast<VulkanSSRApp *>(glfwGetWindowUserPointer(w));
+                                     if (!app->cameraDragging)
+                                         return;
+                                     app->cameraYaw -= static_cast<float>(x - app->lastCursorX) * 0.005f;
+                                     app->cameraPitch = std::clamp(
+                                         app->cameraPitch + static_cast<float>(y - app->lastCursorY) * 0.005f,
+                                         -0.15f, 1.35f);
+                                     app->lastCursorX = x;
+                                     app->lastCursorY = y;
+                                 });
+        glfwSetScrollCallback(window, [](GLFWwindow *w, double, double yoffset)
+                              {
+                                  VulkanSSRApp *app = static_cast<VulkanSSRApp *>(glfwGetWindowUserPointer(w));
+                                  app->cameraDistance = std::clamp(
+                                      app->cameraDistance * std::exp(static_cast<float>(-yoffset) * 0.12f),
+                                      3.2f, 18.0f);
+                              });
         glfwSetFramebufferSizeCallback(window, [](GLFWwindow *w, int, int)
                                        { static_cast<VulkanSSRApp *>(glfwGetWindowUserPointer(w))->framebufferResized = true; });
         updateWindowTitle();
@@ -207,8 +245,8 @@ private:
     void updateWindowTitle() const
     {
         glfwSetWindowTitle(window, ssrEnabled
-                                       ? "SSR - Entrega 4 | SSR: ON (click no botao ou F1)"
-                                       : "SSR - Entrega 4 | SSR: OFF (click no botao ou F1)");
+                                       ? "SSR Vulkan | ON | F1 SSR | F2 debug | botao direito: orbitar | scroll: zoom"
+                                       : "SSR Vulkan | OFF | F1 SSR | F2 debug | botao direito: orbitar | scroll: zoom");
     }
 
     void toggleSSR()
@@ -220,17 +258,6 @@ private:
     void toggleSSRDebug()
     {
         ssrDebugMode = !ssrDebugMode;
-        updateSSRDebugUniform();
-    }
-
-    void updateSSRDebugUniform()
-    {
-        SSRData params{};
-        params.debugMode = ssrDebugMode ? 1 : 0;
-        void *data;
-        vkMapMemory(device, ssrMemory, 0, sizeof(params), 0, &data);
-        memcpy(data, &params, sizeof(params));
-        vkUnmapMemory(device, ssrMemory);
     }
 
     void initVulkan()
@@ -1042,38 +1069,41 @@ private:
         addBox({-1.35f, -0.35f, -2.1f}, {0.65f, 0.65f, 0.65f}, {0.95f, 0.12f, 0.055f});
         addBox({1.2f, -0.6f, -3.45f}, {0.4f, 0.4f, 0.4f}, {0.05f, 0.55f, 0.95f});
 
-        const glm::vec3 sphereCenter{0.0f, -0.42f, -4.8f};
-        constexpr float sphereRadius = 0.58f;
-        constexpr int sphereRings = 12;
-        constexpr int sphereSegments = 24;
         constexpr float pi = 3.14159265358979323846f;
-        const glm::vec3 sphereColor{0.95f, 0.62f, 0.04f};
-        auto sphereNormal = [&](int ring, int segment)
+        auto addSphere = [&](const glm::vec3 &sphereCenter, float sphereRadius, const glm::vec3 &sphereColor)
         {
-            const float theta = pi * float(ring) / float(sphereRings);
-            const float phi = 2.0f * pi * float(segment) / float(sphereSegments);
-            return glm::vec3(std::sin(theta) * std::cos(phi), std::cos(theta), std::sin(theta) * std::sin(phi));
-        };
-        auto addSphereTriangle = [&](const glm::vec3 &normalA, const glm::vec3 &normalB, const glm::vec3 &normalC)
-        {
-            addVertex(sphereCenter + normalA * sphereRadius, normalA, sphereColor);
-            addVertex(sphereCenter + normalB * sphereRadius, normalB, sphereColor);
-            addVertex(sphereCenter + normalC * sphereRadius, normalC, sphereColor);
-        };
-        for (int ring = 0; ring < sphereRings; ++ring)
-        {
-            for (int segment = 0; segment < sphereSegments; ++segment)
+            constexpr int sphereRings = 32;
+            constexpr int sphereSegments = 64;
+            auto sphereNormal = [&](int ring, int segment)
             {
-                const glm::vec3 a = sphereNormal(ring, segment);
-                const glm::vec3 b = sphereNormal(ring, segment + 1);
-                const glm::vec3 c = sphereNormal(ring + 1, segment + 1);
-                const glm::vec3 d = sphereNormal(ring + 1, segment);
-                if (ring > 0)
-                    addSphereTriangle(a, b, d);
-                if (ring + 1 < sphereRings)
-                    addSphereTriangle(b, c, d);
+                const float theta = pi * float(ring) / float(sphereRings);
+                const float phi = 2.0f * pi * float(segment) / float(sphereSegments);
+                return glm::vec3(std::sin(theta) * std::cos(phi), std::cos(theta), std::sin(theta) * std::sin(phi));
+            };
+            auto addSphereTriangle = [&](const glm::vec3 &normalA, const glm::vec3 &normalB, const glm::vec3 &normalC)
+            {
+                addVertex(sphereCenter + normalA * sphereRadius, normalA, sphereColor);
+                addVertex(sphereCenter + normalB * sphereRadius, normalB, sphereColor);
+                addVertex(sphereCenter + normalC * sphereRadius, normalC, sphereColor);
+            };
+            for (int ring = 0; ring < sphereRings; ++ring)
+            {
+                for (int segment = 0; segment < sphereSegments; ++segment)
+                {
+                    const glm::vec3 a = sphereNormal(ring, segment);
+                    const glm::vec3 b = sphereNormal(ring, segment + 1);
+                    const glm::vec3 c = sphereNormal(ring + 1, segment + 1);
+                    const glm::vec3 d = sphereNormal(ring + 1, segment);
+                    if (ring > 0)
+                        addSphereTriangle(a, b, d);
+                    if (ring + 1 < sphereRings)
+                        addSphereTriangle(b, c, d);
+                }
             }
-        }
+        };
+        addBox({2.65f, -0.55f, -2.2f}, {0.45f, 0.45f, 0.45f}, {0.48f, 0.16f, 0.82f});
+        addSphere({0.0f, -0.42f, -4.8f}, 0.58f, {0.95f, 0.62f, 0.04f});
+        addSphere({-2.65f, -0.64f, -3.1f}, 0.36f, {0.08f, 0.78f, 0.48f});
 
         vertexCount = static_cast<uint32_t>(vertices.size());
         createBuffer(sizeof(Vertex) * vertices.size(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, vertexBuffer, vertexMemory);
@@ -1085,29 +1115,37 @@ private:
 
     void createUniformBuffers()
     {
-        createBuffer(sizeof(CameraData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, cameraBuffer, cameraMemory);
-        createBuffer(sizeof(SSRData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, ssrBuffer, ssrMemory);
-        updateUniforms();
+        for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+        {
+            createBuffer(sizeof(CameraData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, cameraBuffers[i], cameraMemories[i]);
+            createBuffer(sizeof(SSRData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, ssrBuffers[i], ssrMemories[i]);
+            updateUniforms(i);
+        }
     }
 
-    void updateUniforms()
+    void updateUniforms(size_t frameIndex)
     {
         CameraData camera{};
         camera.model = glm::mat4(1.0f);
-        camera.view = glm::lookAt(glm::vec3(0.0f, 4.0f, 7.5f), glm::vec3(0.0f, -0.65f, -2.5f), glm::vec3(0, 1, 0));
-        camera.projection = glm::perspective(glm::radians(55.0f), float(swapchainExtent.width) / float(swapchainExtent.height), 0.1f, 40.0f);
+        const float horizontalDistance = cameraDistance * std::cos(cameraPitch);
+        const glm::vec3 cameraPosition = cameraTarget + glm::vec3(
+            std::sin(cameraYaw) * horizontalDistance,
+            std::sin(cameraPitch) * cameraDistance,
+            std::cos(cameraYaw) * horizontalDistance);
+        camera.view = glm::lookAt(cameraPosition, cameraTarget, glm::vec3(0, 1, 0));
+        camera.projection = glm::perspective(glm::radians(48.0f), float(swapchainExtent.width) / float(swapchainExtent.height), 0.1f, 50.0f);
         camera.projection[1][1] *= -1.0f;
         camera.inverseProjection = glm::inverse(camera.projection);
         camera.inverseView = glm::inverse(camera.view);
         void *data;
-        vkMapMemory(device, cameraMemory, 0, sizeof(camera), 0, &data);
+        vkMapMemory(device, cameraMemories[frameIndex], 0, sizeof(camera), 0, &data);
         memcpy(data, &camera, sizeof(camera));
-        vkUnmapMemory(device, cameraMemory);
+        vkUnmapMemory(device, cameraMemories[frameIndex]);
         SSRData params{};
         params.debugMode = ssrDebugMode ? 1 : 0;
-        vkMapMemory(device, ssrMemory, 0, sizeof(params), 0, &data);
+        vkMapMemory(device, ssrMemories[frameIndex], 0, sizeof(params), 0, &data);
         memcpy(data, &params, sizeof(params));
-        vkUnmapMemory(device, ssrMemory);
+        vkUnmapMemory(device, ssrMemories[frameIndex]);
     }
 
     void createSampler()
@@ -1124,62 +1162,76 @@ private:
         info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
         if (vkCreateSampler(device, &info, nullptr, &sampler) != VK_SUCCESS)
             throw std::runtime_error("Sampler creation failed");
+        info.magFilter = VK_FILTER_NEAREST;
+        info.minFilter = VK_FILTER_NEAREST;
+        info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        info.anisotropyEnable = VK_FALSE;
+        if (vkCreateSampler(device, &info, nullptr, &nearestSampler) != VK_SUCCESS)
+            throw std::runtime_error("Nearest sampler creation failed");
     }
 
     void createDescriptorPool()
     {
         std::array<VkDescriptorPoolSize, 2> sizes{
-            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 3},
-            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 5}};
+            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT * 3)},
+            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT * 3 + 2)}};
         VkDescriptorPoolCreateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         info.poolSizeCount = 2;
         info.pPoolSizes = sizes.data();
-        info.maxSets = 3;
+        info.maxSets = MAX_FRAMES_IN_FLIGHT * 2 + 1;
         if (vkCreateDescriptorPool(device, &info, nullptr, &descriptorPool) != VK_SUCCESS)
             throw std::runtime_error("Descriptor pool failed");
     }
 
     void createDescriptorSets()
     {
-        std::array<VkDescriptorSetLayout, 3> layouts{sceneSetLayout, ssrSetLayout, compositeSetLayout};
-        std::array<VkDescriptorSet, 3> sets{};
+        std::array<VkDescriptorSetLayout, MAX_FRAMES_IN_FLIGHT * 2 + 1> layouts{};
+        for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+        {
+            layouts[i] = sceneSetLayout;
+            layouts[MAX_FRAMES_IN_FLIGHT + i] = ssrSetLayout;
+        }
+        layouts.back() = compositeSetLayout;
+        std::array<VkDescriptorSet, MAX_FRAMES_IN_FLIGHT * 2 + 1> sets{};
         VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
         alloc.descriptorPool = descriptorPool;
-        alloc.descriptorSetCount = 3;
+        alloc.descriptorSetCount = static_cast<uint32_t>(layouts.size());
         alloc.pSetLayouts = layouts.data();
         if (vkAllocateDescriptorSets(device, &alloc, sets.data()) != VK_SUCCESS)
             throw std::runtime_error("Descriptor allocation failed");
-        sceneSet = sets[0];
-        ssrSet = sets[1];
-        compositeSet = sets[2];
-
-        VkDescriptorBufferInfo cam{cameraBuffer, 0, sizeof(CameraData)};
-        VkWriteDescriptorSet sw{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        sw.dstSet = sceneSet;
-        sw.dstBinding = 0;
-        sw.descriptorCount = 1;
-        sw.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        sw.pBufferInfo = &cam;
-        vkUpdateDescriptorSets(device, 1, &sw, 0, nullptr);
-
-        VkDescriptorBufferInfo ssrCam{cameraBuffer, 0, sizeof(CameraData)};
-        VkDescriptorBufferInfo params{ssrBuffer, 0, sizeof(SSRData)};
         VkDescriptorImageInfo color{sampler, sceneColorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        VkDescriptorImageInfo depth{sampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        VkDescriptorImageInfo normal{sampler, sceneNormalView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        std::array<VkWriteDescriptorSet, 5> qw{};
-        qw[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, ssrSet, 0, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, nullptr, nullptr};
-        qw[0].pImageInfo = &color;
-        qw[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, ssrSet, 1, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, nullptr, nullptr};
-        qw[1].pImageInfo = &depth;
-        qw[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, ssrSet, 2, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, nullptr, nullptr};
-        qw[2].pImageInfo = &normal;
-        qw[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, ssrSet, 3, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, nullptr, nullptr};
-        qw[3].pBufferInfo = &ssrCam;
-        qw[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, ssrSet, 4, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, nullptr, nullptr};
-        qw[4].pBufferInfo = &params;
-        vkUpdateDescriptorSets(device, 5, qw.data(), 0, nullptr);
+        VkDescriptorImageInfo depth{nearestSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkDescriptorImageInfo normal{nearestSampler, sceneNormalView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+        {
+            sceneSets[i] = sets[i];
+            ssrSets[i] = sets[MAX_FRAMES_IN_FLIGHT + i];
+            VkDescriptorBufferInfo cam{cameraBuffers[i], 0, sizeof(CameraData)};
+            VkWriteDescriptorSet sw{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            sw.dstSet = sceneSets[i];
+            sw.dstBinding = 0;
+            sw.descriptorCount = 1;
+            sw.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            sw.pBufferInfo = &cam;
+            vkUpdateDescriptorSets(device, 1, &sw, 0, nullptr);
 
+            VkDescriptorBufferInfo ssrCam{cameraBuffers[i], 0, sizeof(CameraData)};
+            VkDescriptorBufferInfo params{ssrBuffers[i], 0, sizeof(SSRData)};
+            std::array<VkWriteDescriptorSet, 5> qw{};
+            qw[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, ssrSets[i], 0, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, nullptr, nullptr};
+            qw[0].pImageInfo = &color;
+            qw[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, ssrSets[i], 1, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, nullptr, nullptr};
+            qw[1].pImageInfo = &depth;
+            qw[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, ssrSets[i], 2, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, nullptr, nullptr, nullptr};
+            qw[2].pImageInfo = &normal;
+            qw[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, ssrSets[i], 3, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, nullptr, nullptr};
+            qw[3].pBufferInfo = &ssrCam;
+            qw[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, ssrSets[i], 4, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, nullptr, nullptr};
+            qw[4].pBufferInfo = &params;
+            vkUpdateDescriptorSets(device, static_cast<uint32_t>(qw.size()), qw.data(), 0, nullptr);
+        }
+
+        compositeSet = sets.back();
         VkDescriptorImageInfo compScene{sampler, sceneColorView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkDescriptorImageInfo compSSR{sampler, ssrResultView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         std::array<VkWriteDescriptorSet, 2> cw{};
@@ -1213,7 +1265,7 @@ private:
         }
     }
 
-    void recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex)
+    void recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex, size_t frameIndex)
     {
         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         if (vkBeginCommandBuffer(cmd, &begin) != VK_SUCCESS)
@@ -1237,7 +1289,7 @@ private:
         vkCmdSetScissor(cmd, 0, 1, &ds);
         VkDeviceSize offset = 0;
         vkCmdBindVertexBuffers(cmd, 0, 1, &vertexBuffer, &offset);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, scenePipelineLayout, 0, 1, &sceneSet, 0, nullptr);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, scenePipelineLayout, 0, 1, &sceneSets[frameIndex], 0, nullptr);
         vkCmdDraw(cmd, vertexCount, 1, 0, 0);
         vkCmdEndRenderPass(cmd);
 
@@ -1255,7 +1307,7 @@ private:
         VkRect2D qs{{0, 0}, swapchainExtent};
         vkCmdSetViewport(cmd, 0, 1, &qv);
         vkCmdSetScissor(cmd, 0, 1, &qs);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ssrPipelineLayout, 0, 1, &ssrSet, 0, nullptr);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ssrPipelineLayout, 0, 1, &ssrSets[frameIndex], 0, nullptr);
         vkCmdDraw(cmd, 3, 1, 0, 0);
         vkCmdEndRenderPass(cmd);
 
@@ -1286,6 +1338,7 @@ private:
     void drawFrame()
     {
         vkWaitForFences(device, 1, &inFlight[currentFrame], VK_TRUE, UINT64_MAX);
+        updateUniforms(currentFrame);
         uint32_t imageIndex = 0;
         VkResult result = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAvailable[currentFrame], VK_NULL_HANDLE, &imageIndex);
         if (result == VK_ERROR_OUT_OF_DATE_KHR)
@@ -1297,7 +1350,7 @@ private:
             throw std::runtime_error("Failed to acquire swapchain image");
         vkResetFences(device, 1, &inFlight[currentFrame]);
         vkResetCommandBuffer(commandBuffers[currentFrame], 0);
-        recordCommandBuffer(commandBuffers[currentFrame], imageIndex);
+        recordCommandBuffer(commandBuffers[currentFrame], imageIndex, currentFrame);
         // Wait before render-pass layout transitions of the acquired image.
         VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
         VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
@@ -1386,7 +1439,8 @@ private:
         createSwapchainImageViews();
         createOffscreenResources();
         createFramebuffers();
-        updateUniforms();
+        for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+            updateUniforms(i);
         createDescriptorPool();
         createDescriptorSets();
     }
@@ -1404,10 +1458,14 @@ private:
         vkDestroyDescriptorSetLayout(device, ssrSetLayout, nullptr);
         vkDestroyDescriptorSetLayout(device, compositeSetLayout, nullptr);
         vkDestroySampler(device, sampler, nullptr);
-        vkDestroyBuffer(device, ssrBuffer, nullptr);
-        vkFreeMemory(device, ssrMemory, nullptr);
-        vkDestroyBuffer(device, cameraBuffer, nullptr);
-        vkFreeMemory(device, cameraMemory, nullptr);
+        vkDestroySampler(device, nearestSampler, nullptr);
+        for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+        {
+            vkDestroyBuffer(device, ssrBuffers[i], nullptr);
+            vkFreeMemory(device, ssrMemories[i], nullptr);
+            vkDestroyBuffer(device, cameraBuffers[i], nullptr);
+            vkFreeMemory(device, cameraMemories[i], nullptr);
+        }
         vkDestroyBuffer(device, vertexBuffer, nullptr);
         vkFreeMemory(device, vertexMemory, nullptr);
         cleanupSwapchain();

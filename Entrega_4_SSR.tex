@@ -41,10 +41,10 @@ As imagens intermediárias possuem uso de attachment e sampled image. Assim, uma
 \section{Integração dos shaders}
 Os shaders da Entrega 3 estavam descritos como pseudocódigo GLSL e utilizavam \texttt{\#version PSEUDOCODE 1.0}. Para esta entrega, sua lógica foi convertida para GLSL 4.50 real, mantendo o fluxo algorítmico definido anteriormente.
 
-O \texttt{ssr.vert} continua gerando um fullscreen triangle a partir de \texttt{gl\_VertexIndex}. O \texttt{ssr.frag} mantém os recursos do Descriptor Set 0: SceneColor, SceneDepth, NormalTexture, CameraUBO e SSRParameters. O shader reconstrói a posição em view space, calcula a direção de reflexão, projeta o raio para screen space, executa ray marching, testa a profundidade e, quando encontra uma interseção, amostra SceneColor e aplica a atenuação por distância e Fresnel simplificado.
+O \texttt{ssr.vert} continua gerando um fullscreen triangle a partir de \texttt{gl\_VertexIndex}. O \texttt{ssr.frag} mantém os recursos do Descriptor Set 0: SceneColor, SceneDepth, NormalTexture, CameraUBO e SSRParameters. O shader reconstrói a posição em view space, calcula a direção de reflexão, percorre até 12 unidades com até 144 amostras e refina a interseção por oito iterações de busca binária. A profundidade e as normais são amostradas sem filtragem para evitar interpolação entre superfícies; o resultado recebe atenuação por distância, borda e Fresnel. A tecla F2 exibe um mapa de calor da distância dos raios.
 
 \section{Descritores}
-O pass de cena utiliza um uniform buffer para as matrizes da câmera. O pass de SSR utiliza cinco bindings: três combined image samplers, um CameraUBO e um buffer de parâmetros. A composição utiliza dois combined image samplers, correspondentes a SceneColor e SSRResult.
+Cada frame em voo tem seus próprios uniform buffers e descriptor sets de cena e SSR, evitando que a CPU sobrescreva os dados da câmera enquanto a GPU ainda os utiliza. O pass de SSR utiliza cinco bindings: três combined image samplers, um CameraUBO e um buffer de parâmetros. A composição utiliza dois combined image samplers, correspondentes a SceneColor e SSRResult.
 
 \section{Sincronização}
 A dependência entre as etapas é expressa por dependências de subpass/render pass e transições de layout. SceneColor, SceneDepth e NormalTexture terminam o primeiro pass em \texttt{SHADER\_READ\_ONLY\_OPTIMAL}; SSRResult termina o segundo pass no mesmo layout para ser lido pela composição; a imagem da swapchain termina a composição em \texttt{PRESENT\_SRC\_KHR}. Semáforos e fences controlam a sincronização entre CPU, fila gráfica e apresentação.
@@ -67,7 +67,10 @@ No Windows, em uma configuração Release:
 .\\build\\Release\\ssr_app.exe
 \end{lstlisting}
 
+\section{Controles da câmera e da demonstração}
+A câmera orbita os objetos com o botão direito do mouse pressionado e aproxima/afasta pela roda do mouse. A tecla F1 (ou o botão no canto superior esquerdo) alterna o SSR; F2 mostra o mapa de calor dos raios encontrados. A câmera usa buffers independentes por frame em voo para manter a atualização sincronizada com a GPU.
+
 \section{Estado atual e próximos passos}
-A entrega já possui o boilerplate Vulkan, a janela, a swapchain, os recursos intermediários, os pipelines, os shaders SPIR-V, os command buffers, a sincronização e o loop de apresentação. A geometria utilizada para demonstrar o funcionamento é intencionalmente simples. A estrutura permite substituir a cena de teste por uma cena mais complexa e evoluir o SSR com técnicas como refinamento de interseção, binary search, roughness e otimizações do ray marching.
+A aplicação apresenta um chão quadriculado, três cubos, duas esferas com malha de 32 por 64 segmentos, iluminação difusa e especular e controles interativos de câmera. O SSR percorre todo o alcance configurado, refina as interseções com busca binária e reduz artefatos ao amostrar profundidade/normais sem filtragem. Como limitações inerentes ao SSR, reflexos fora da tela e superfícies oclusas não podem ser recuperados; roughness por material, hierarquia de profundidade e técnicas temporais são evoluções possíveis.
 
 \end{document}

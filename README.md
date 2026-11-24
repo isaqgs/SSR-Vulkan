@@ -2,7 +2,14 @@
 
 Projeto acadêmico em C++17 que inicializa Vulkan e integra um pipeline de três etapas: renderização da cena, cálculo de Screen-Space Reflections (SSR) e composição da imagem final. Clique no botão colorido no canto superior esquerdo ou pressione **F1** para alternar entre a cena normal e a cena com SSR; o estado atual aparece no título da janela.
 
-O programa apresenta uma cena com chão, dois cubos coloridos e uma esfera sobre um fundo escuro. O passe SSR usa os dados de cor, profundidade e normais da cena para gerar reflexos.
+O programa apresenta uma cena iluminada com chão quadriculado, três cubos e duas esferas suaves. O passe SSR usa cor, profundidade e normais da cena para traçar reflexos em espaço de tela, com refinamento da interseção.
+
+### Controles durante a demonstração
+
+- **F1** ou clique no botão verde/vermelho no canto superior esquerdo: liga/desliga SSR.
+- **F2**: mostra/esconde o mapa de distância dos raios (verde = curto, vermelho = longo).
+- **Botão direito + arrastar**: orbita a câmera em torno dos objetos.
+- **Roda do mouse**: aproxima/afasta a câmera.
 
 ## Tecnologias
 
@@ -96,7 +103,9 @@ Get-ChildItem build\shaders\*.spv | ForEach-Object {
 
 Ao executar, deve abrir uma janela com a cena e o SSR ativado. O título indica o estado atual; clique no botão colorido no canto superior esquerdo ou pressione **F1** para alternar o SSR. Redimensionar a janela recria a swapchain e seus recursos associados.
 
-O pipeline SSR usa cor, profundidade e normais da cena para procurar uma interseção ao longo de um raio refletido. Quando o SSR está desativado, a composição exibe somente a cor normal da cena.
+O pipeline SSR usa cor, profundidade e normais da cena para percorrer o raio refletido até 12 unidades, fazer até 144 amostras e refinar uma interseção encontrada com busca binária. A profundidade e as normais usam amostragem pontual para evitar misturar superfícies diferentes; a cor refletida usa amostragem linear. A composição aplica atenuação por distância, borda e Fresnel. Quando o SSR está desativado, a composição exibe somente a cena iluminada.
+
+Os buffers de câmera e parâmetros são separados por frame em voo, permitindo atualizar a câmera sem sobrescrever dados ainda utilizados pela GPU. Ao redimensionar a janela, a swapchain e os descritores são recriados.
 
 ## Solução de problemas
 
