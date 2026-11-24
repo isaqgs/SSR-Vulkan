@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cmath>
+#include <cstdio>
 
 static constexpr uint32_t WIDTH = 1280;
 static constexpr uint32_t HEIGHT = 720;
@@ -173,6 +174,8 @@ private:
     glm::vec3 playerPosition{0.0f, -0.35f, 2.15f};
     float cameraYaw = 0.0f;
     float cameraPitch = 0.0f;
+    float displayedFps = 0.0f;
+    float displayedFrameTimeMs = 0.0f;
     static constexpr float playerRadius = 0.22f;
     static constexpr float moveSpeed = 3.0f;
 
@@ -235,9 +238,20 @@ private:
 
     void updateWindowTitle() const
     {
-        glfwSetWindowTitle(window, ssrEnabled
-                                       ? "SSR Vulkan | ON | WASD mover | segure botao direito: olhar | F1 SSR | F2 debug"
-                                       : "SSR Vulkan | OFF | WASD mover | segure botao direito: olhar | F1 SSR | F2 debug");
+        char title[192];
+        if (displayedFps > 0.0f)
+        {
+            std::snprintf(title, sizeof(title),
+                          "SSR Vulkan | %s | %.0f FPS | %.1f ms/frame | F1 SSR | F2 debug | WASD | RMB olhar",
+                          ssrEnabled ? "SSR ON" : "SSR OFF", displayedFps, displayedFrameTimeMs);
+        }
+        else
+        {
+            std::snprintf(title, sizeof(title),
+                          "SSR Vulkan | %s | F1 SSR | F2 debug | WASD | RMB olhar",
+                          ssrEnabled ? "SSR ON" : "SSR OFF");
+        }
+        glfwSetWindowTitle(window, title);
     }
 
     void toggleSSR()
@@ -1427,6 +1441,8 @@ private:
     void mainLoop()
     {
         double previousTime = glfwGetTime();
+        double fpsWindowStart = previousTime;
+        uint32_t framesInWindow = 0;
         while (!glfwWindowShouldClose(window))
         {
             glfwPollEvents();
@@ -1435,6 +1451,18 @@ private:
             previousTime = currentTime;
             updatePlayerMovement(deltaTime);
             drawFrame();
+            ++framesInWindow;
+
+            const double statsTime = glfwGetTime();
+            const double statsInterval = statsTime - fpsWindowStart;
+            if (statsInterval >= 0.5)
+            {
+                displayedFps = static_cast<float>(framesInWindow / statsInterval);
+                displayedFrameTimeMs = displayedFps > 0.0f ? 1000.0f / displayedFps : 0.0f;
+                framesInWindow = 0;
+                fpsWindowStart = statsTime;
+                updateWindowTitle();
+            }
         }
         vkDeviceWaitIdle(device);
     }

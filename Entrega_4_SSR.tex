@@ -68,7 +68,7 @@ No Windows, em uma configuração Release:
 \end{lstlisting}
 
 \section{Controles da câmera e da demonstração}
-A câmera se movimenta pelo cenário com W/A/S/D e olha ao redor enquanto o botão direito do mouse está pressionado; ao soltar o botão, o cursor fica livre. A altura da câmera permanece aproximadamente na metade do cubo vermelho. Colisões simplificadas com os cubos, as esferas e os limites do chão impedem atravessar os objetos ou sair da área. A tecla F1 alterna o SSR; F2 mostra o mapa de calor dos raios encontrados. A câmera usa buffers independentes por frame em voo para manter a atualização sincronizada com a GPU.
+A câmera se movimenta pelo cenário com W/A/S/D e olha ao redor enquanto o botão direito do mouse está pressionado; ao soltar o botão, o cursor fica livre. A altura da câmera permanece aproximadamente na metade do cubo vermelho. Colisões simplificadas com os cubos, as esferas e os limites do chão impedem atravessar os objetos ou sair da área. A tecla F1 alterna o SSR; F2 mostra o mapa de calor dos raios encontrados. O título da janela exibe FPS e tempo médio por frame. A câmera usa buffers independentes por frame em voo para manter a atualização sincronizada com a GPU.
 
 \section{Estado atual e próximos passos}
 A aplicação apresenta um chão quadriculado, três cubos, duas esferas com malha de 32 por 64 segmentos, iluminação difusa e especular e controles interativos de câmera. O SSR percorre todo o alcance configurado, refina as interseções com busca binária e reduz artefatos ao amostrar profundidade/normais sem filtragem. Como limitações inerentes ao SSR, reflexos fora da tela e superfícies oclusas não podem ser recuperados; roughness por material, hierarquia de profundidade e técnicas temporais são evoluções possíveis.
